@@ -1,14 +1,82 @@
 #![allow(dead_code)]
 
+pub struct Program {
+    pub items: Vec<Item>, //nodo principal del arbol
+}
+
+pub enum Item {
+    Function(FunctionDecl),
+    Type(TypeDecl),
+    Protocol(ProtocolDecl),
+    Macro(MacroDecl),
+    GlobalExpr(Expr),
+}
+
+pub struct FunctionDecl {
+    pub name: String, //ej: function sum(x, y) => x + y;
+    pub params: Vec<Param>,
+    pub return_type: Option<TypeRef>,
+    pub body: Expr,
+}
+
+pub struct Param {
+    pub name: String,
+    pub types: Option<TypeRef>,
+}
+
+pub struct TypeDecl {
+    pub name: String, //ej: type Person{ name:String   mynameis()=> print(self.name)}
+    pub param: Vec<Param>, //ej: type Point(x,y)...
+    pub parent: Option<TypeRef>, //herencia
+    pub parent_arg: Vec<Expr>, //parametros que se le pasan al padre
+    pub fields: Vec<FieldDecl>,
+    pub methods: Vec<FunctionDecl>,
+}
+
+pub struct FieldDecl {
+    pub name: String,
+    pub type_annotation: Option<TypeRef>,
+    pub initializer: Expr,
+}
+
+pub struct ProtocolDecl {
+    pub name: String, //ej: protocol Printable {print(): String}
+    pub methods: Vec<ProtocolMethod>,
+}
+
+pub struct ProtocolMethod {
+    pub name: String,
+    pub params: Vec<Param>,
+    pub return_type: TypeRef,
+}
+
+pub struct MacroDecl {
+    pub name: String,
+    pub params: Vec<MacroParam>,
+    pub body: Expr,
+}
+
+pub struct MacroParam {
+    pub name: String,
+    pub kind: MacroParamKind,
+}
+
+pub enum MacroParamKind {
+    Normal,
+    Block,       // *expr
+    Symbolic,    // @x
+    Placeholder, // $x
+}
+
 pub struct Expr {
     pub id: NodeId,     //id de la expresion
-    pub spand: Spand, //para saber en que posicion se encuentra, util para debugueo y mostrar errores
+    pub span: Span, //para saber en que posicion se encuentra, util para debugueo y mostrar errores
     pub kind: KindExpr, //tipo de la expresion
 }
 
 pub struct NodeId(pub u32); //el campo id es de tipo NodeId que realmente es u32
 
-pub struct Spand {
+pub struct Span {
     pub start: usize, //posiciones dentro de un string, y los strings en Rust se indexan con usize
     pub end: usize,
 }
@@ -19,6 +87,8 @@ pub enum KindExpr {
     Binary(BinaryExpr),
     Unary(UnaryExpr),
     Call(CallExpr),
+    BaseCall(BaseCallExpr),
+    MacroCall(MacroCallExpr),
     Let(LetExpr),
     Block(BlockExpr),
     If(IfExpr),
@@ -28,11 +98,12 @@ pub enum KindExpr {
     MemberAccess(MemberAccessExpr),
     Index(IndexExpr),
     Array(ArrayExpr),
-    Object(ObjectExpr),
+    ArrayComprehension(ArrayComprehensionExpr),
     Lambda(LambdaExpr),
     New(NewExpr),
     Is(IsExpr),
     As(AsExpr),
+    Match(MatchExpr),
 }
 
 pub struct LiteralExpr {
@@ -93,6 +164,15 @@ pub struct CallExpr {
     pub arguments: Vec<Expr>,
 }
 
+pub struct BaseCallExpr {
+    pub arguments: Vec<Expr>,
+}
+
+pub struct MacroCallExpr {
+    pub name: String, //ej: reply(5)
+    pub arguments: Vec<Expr>,
+}
+
 pub struct LetExpr {
     pub bindings: Vec<LetBinding>, //ej: let x =5, y = 10 in x+y
     pub body: Box<Expr>,
@@ -108,6 +188,8 @@ pub enum TypeRef {
     Number,
     String,
     Boolean,
+    Array(Box<TypeRef>),
+    Function(Vec<TypeRef>, Box<TypeRef>),
     Custom(String), // para tipos definidos por el usuario
 }
 
@@ -152,12 +234,15 @@ pub struct ArrayExpr {
     pub elements: Vec<Expr>, //ej: [1, 2, 3]
 }
 
-pub struct ObjectExpr {
-    pub fields: Vec<(String, Expr)>, //ej: { name: "Ana", age: 20 }
+pub struct ArrayComprehensionExpr {
+    pub element: Box<Expr>, // ej:[x * 2 || x in numbers]
+    pub variable: String, // expresión generada (x * 2), variable iteradora (x), iterable (numbers)
+    pub iterable: Box<Expr>,
 }
 
 pub struct LambdaExpr {
-    pub params: Vec<String>, //ej: (x) => x + 1
+    pub params: Vec<Param>, //ej: (x) => x + 1
+    pub return_type: Option<TypeRef>,
     pub body: Box<Expr>,
 }
 
@@ -174,4 +259,31 @@ pub struct IsExpr {
 pub struct AsExpr {
     pub expression: Box<Expr>, // x as Number
     pub type_info: TypeRef,
+}
+pub struct MatchExpr {
+    pub expression: Box<Expr>,
+    pub cases: Vec<MatchCase>,
+}
+
+pub struct MatchCase {
+    pub pattern: Pattern,
+    pub body: Expr,
+}
+
+pub enum Pattern {
+    Identifier {
+        name: String,
+        type_restriction: Option<TypeRef>,
+    },
+    Binary {
+        left: Box<Pattern>,
+        operator: BinaryOperator,
+        right: Box<Pattern>,
+    },
+    Unary {
+        operator: UnaryOperator,
+        operand: Box<Pattern>,
+    },
+    Literal(LiteralValue),
+    Default,
 }
