@@ -1,1 +1,0 @@
-C:\Users\witch\OneDrive\Documentos\3ro\Compilacion\ y\ LP\HULK\hulk\target\debug\hulk.exe: C:\Users\witch\OneDrive\Documentos\3ro\Compilacion\ y\ LP\HULK\hulk\src\ast.rs C:\Users\witch\OneDrive\Documentos\3ro\Compilacion\ y\ LP\HULK\hulk\src\main.rs

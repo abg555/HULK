@@ -22,6 +22,7 @@ pub struct FunctionDecl {
 pub struct Param {
     pub name: String,
     pub types: Option<TypeRef>,
+    pub is_variadic: bool,
 }
 
 pub struct TypeDecl {
@@ -40,7 +41,8 @@ pub struct FieldDecl {
 }
 
 pub struct ProtocolDecl {
-    pub name: String, //ej: protocol Printable {print(): String}
+    pub name: String,                 //ej: protocol Printable {print(): String}
+    pub parent: Option<Box<TypeRef>>, // ej: protocol Equatable extends Hashable
     pub methods: Vec<ProtocolMethod>,
 }
 
@@ -59,6 +61,7 @@ pub struct MacroDecl {
 pub struct MacroParam {
     pub name: String,
     pub kind: MacroParamKind,
+    pub type_info: Option<TypeRef>, // Type annotation for macro parameters
 }
 
 pub enum MacroParamKind {
@@ -72,6 +75,14 @@ pub struct Expr {
     pub id: NodeId,     //id de la expresion
     pub span: Span, //para saber en que posicion se encuentra, util para debugueo y mostrar errores
     pub kind: KindExpr, //tipo de la expresion
+}
+
+pub fn mk_expr(kind: KindExpr) -> Expr {
+    Expr {
+        id: NodeId(0),
+        span: Span { start: 0, end: 0 },
+        kind,
+    }
 }
 
 pub struct NodeId(pub u32); //el campo id es de tipo NodeId que realmente es u32
@@ -170,7 +181,13 @@ pub struct BaseCallExpr {
 
 pub struct MacroCallExpr {
     pub name: String, //ej: reply(5)
-    pub arguments: Vec<Expr>,
+    pub arguments: Vec<MacroCallArg>,
+    pub action: Option<Box<Expr>>, // bloque trailing: repeat(10) { ... }
+}
+
+pub struct MacroCallArg {
+    pub kind: MacroParamKind,
+    pub value: Expr,
 }
 
 pub struct LetExpr {
@@ -188,9 +205,9 @@ pub enum TypeRef {
     Number,
     String,
     Boolean,
-    Array(Box<TypeRef>),
-    Function(Vec<TypeRef>, Box<TypeRef>),
-    Custom(String), // para tipos definidos por el usuario
+    Vector(Box<TypeRef>),                 // T[] - Vector type (postfix notation)
+    Function(Vec<TypeRef>, Box<TypeRef>), // (T1, T2) -> Out - Function type
+    Custom(String),                       // User-defined type
 }
 
 pub struct BlockExpr {
@@ -241,8 +258,8 @@ pub struct ArrayComprehensionExpr {
 }
 
 pub struct LambdaExpr {
-    pub params: Vec<Param>, //ej: (x) => x + 1
-    pub return_type: Option<TypeRef>,
+    pub params: Vec<Param>,           //ej: (x) => x + 1
+    pub return_type: Option<TypeRef>, //ej: (x: Number): Number => x + 1
     pub body: Box<Expr>,
 }
 

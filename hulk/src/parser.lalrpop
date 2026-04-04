@@ -1,0 +1,503 @@
+grammar;
+
+use crate::ast::*;
+use crate::lexer::Token;
+
+extern {
+    type Location = usize;
+    type Error = (); // Puedes personalizar esto luego
+
+    enum Token {
+        "let" => Token::Let,
+        "in" => Token::In,
+        "if" => Token::If,
+        "else" => Token::Else,
+        "elif" => Token::Elif,
+        "while" => Token::While,
+        "for" => Token::For,
+        "function" => Token::Function,
+        "type" => Token::Type,
+        "new" => Token::New,
+        "inherits" => Token::Inherits,
+        "extends" => Token::Extends,
+        "is" => Token::Is,
+        "as" => Token::As,
+        "protocol" => Token::Protocol,
+        "match" => Token::Match,
+        "case" => Token::Case,
+        "default" => Token::Default,
+        "def" => Token::Def,
+        "self" => Token::SelfToken,
+        "base" => Token::Base,
+        "lambda" => Token::Lambda,
+        "id" => Token::Identifier(<String>),
+        "num" => Token::Number(<f64>),
+        "str" => Token::String(<String>),
+        "true" => Token::True,
+        "false" => Token::False,
+        "Number" => Token::TypeNumber,
+        "String" => Token::TypeString,
+        "Boolean" => Token::TypeBoolean,
+        "+" => Token::Plus,
+        "-" => Token::Minus,
+        "*" => Token::Star,
+        "/" => Token::Slash,
+        "^" => Token::Caret,
+        "%" => Token::Mod,
+        "==" => Token::EqualEqual,
+        "!=" => Token::NotEqual,
+        "<" => Token::Less,
+        ">" => Token::Greater,
+        "<=" => Token::LessEqual,
+        ">=" => Token::GreaterEqual,
+        "&" => Token::And,
+        "|" => Token::Or,
+        "!" => Token::Not,
+        "=" => Token::Equal,
+        ":=" => Token::ColonEqual,
+        "@" => Token::At,
+        "@@" => Token::DoubleAt,
+        "||" => Token::DoublePipe,
+        "$" => Token::Dollar,
+        "(" => Token::LParen,
+        ")" => Token::RParen,
+        "macro_lbrace" => Token::MacroLBrace,
+        "{" => Token::LBrace,
+        "}" => Token::RBrace,
+        "[" => Token::LBracket,
+        "]" => Token::RBracket,
+        "," => Token::Comma,
+        "." => Token::Dot,
+        ":" => Token::Colon,
+        ";" => Token::Semicolon,
+        "=>" => Token::Arrow,
+        "->" => Token::ThinArrow,
+    }
+}
+
+pub Program: Program = {
+    <items:TopLevelItems> <expr:Expr> ";" => {
+        let mut items = items;
+        items.push(Item::GlobalExpr(expr));
+        Program { items }
+    },
+    <items:TopLevelItems> <expr:Expr> => {
+        let mut items = items;
+        items.push(Item::GlobalExpr(expr));
+        Program { items }
+    },
+    <items:TopLevelItems> => Program { items },
+    <expr:Expr> ";" => Program { items: vec![Item::GlobalExpr(expr)] },
+    <expr:Expr> => Program { items: vec![Item::GlobalExpr(expr)] },
+}
+
+TopLevelItems: Vec<Item> = {
+    <item:TopLevelItem> => vec![item],
+    <mut items:TopLevelItems> <item:TopLevelItem> => { items.push(item); items },
+}
+
+TopLevelItem: Item = {
+    <macr:MacroDecl> => Item::Macro(macr),
+    <potro: ProtocolDecl> => Item::Protocol(potro),
+    <typ: TypeDecl> => Item::Type(typ),
+    <func: FunctionDecl> => Item::Function(func),
+}
+
+Item: Item = {
+    <macr:MacroDecl> => Item::Macro(macr),
+    <potro: ProtocolDecl> => Item::Protocol(potro),
+    <typ: TypeDecl> => Item::Type(typ),
+    <func: FunctionDecl> => Item::Function(func),
+    <expr : Expr> ";" => Item::GlobalExpr(expr),
+};
+
+MacroDecl: MacroDecl = {
+    "def" <name:"id"> "(" <params:MacroParamList> ")" <_return_type:(":" <TypeRef>)?> "=>" <body:Expr> ";" => MacroDecl {name,params,body},
+    "def" <name:"id"> "(" <params:MacroParamList> ")" <_return_type:(":" <TypeRef>)?> <body:BlockExpr> => MacroDecl {name,params,body},
+};
+
+MacroParamList: Vec<MacroParam> = {
+    => vec![],
+    <p:MacroParam> => vec![p],
+    <mut l:MacroParamList> "," <p:MacroParam> => { l.push(p); l }
+};
+
+MacroParam: MacroParam = {
+    <name:"id"> ":" <type_info:TypeRef> => MacroParam { name, kind: MacroParamKind::Normal, type_info: Some(type_info) },
+    <name:"id"> => MacroParam { name, kind: MacroParamKind::Normal, type_info: None },
+    "*" <name:"id"> ":" <type_info:TypeRef> => MacroParam { name, kind: MacroParamKind::Block, type_info: Some(type_info) },
+    "*" <name:"id"> => MacroParam { name, kind: MacroParamKind::Block, type_info: None },
+    "@" <name:"id"> ":" <type_info:TypeRef> => MacroParam { name, kind: MacroParamKind::Symbolic, type_info: Some(type_info) },
+    "@" <name:"id"> => MacroParam { name, kind: MacroParamKind::Symbolic, type_info: None },
+    "$" <name:"id"> ":" <type_info:TypeRef> => MacroParam { name, kind: MacroParamKind::Placeholder, type_info: Some(type_info) },
+    "$" <name:"id"> => MacroParam { name, kind: MacroParamKind::Placeholder, type_info: None },
+}
+
+ProtocolDecl: ProtocolDecl = {
+    "protocol" <name:"id"> <parent:ProtocolParent?> "{" <methods:ProtocolMethodList> "}" => ProtocolDecl {name, parent, methods}
+};
+
+ProtocolParent: Box<TypeRef> = {
+    "extends" <name:"id"> => Box::new(TypeRef::Custom(name))
+};
+
+ProtocolMethodList: Vec<ProtocolMethod> = {
+    => vec![],
+    <mut methods:ProtocolMethodList> <method:ProtocolMethodDef> => {methods.push(method);methods}
+};
+
+ProtocolMethodDef: ProtocolMethod = {
+    <name:"id"> "(" <params:ParamList> ")" ":" <return_type:TypeRef> ";" => ProtocolMethod {name,params,return_type,}
+};
+
+TypeDecl: TypeDecl = {
+    "type" <name:"id"><params:TypeParams?><parent:ParentSpec?>"{" <members:TypeMembers> "}"=> {
+        let (parent_type, parent_args) = parent.unwrap_or((None, vec![]));
+        TypeDecl {name,param: params.unwrap_or(vec![]),parent: parent_type,parent_arg: parent_args,fields: members.0,methods: members.1,}
+    }
+};
+
+TypeParams: Vec<Param> = {
+    "(" <params:ParamList> ")" => params
+};
+
+ParentSpec: (Option<TypeRef>, Vec<Expr>) = {
+    "inherits" <name:"id"> <args:ParentArgs?> => {
+        let type_ref = TypeRef::Custom(name);
+        let args = args.unwrap_or(vec![]);
+        (Some(type_ref), args)
+    }
+};
+
+ParentArgs: Vec<Expr> = {
+    "(" <args:ArgList> ")" => args
+};
+
+TypeMembers: (Vec<FieldDecl>, Vec<FunctionDecl>) = {
+    => (vec![], vec![]),
+    <mut members:TypeMembers> <f:FieldDecl> => {members.0.push(f);members},
+    <mut members:TypeMembers> <m:TypeMethodDecl> => {members.1.push(m);members},
+};
+
+TypeMethodDecl: FunctionDecl = {
+    <name:"id"> "(" <params:ParamList> ")" <return_type:(":" <TypeRef>)?>  "=>" <body:Expr> ";" => FunctionDecl {name, params, return_type, body},
+    <name:"id"> "(" <params:ParamList> ")" <return_type:(":" <TypeRef>)?>  <body:BlockExpr> => FunctionDecl {name, params, return_type, body},
+};
+
+FieldDecl: FieldDecl = {
+    <name:"id"> <typ:(":" <TypeRef>)?>  "=" <init:Expr> ";" => FieldDecl {name, type_annotation: typ, initializer: init}
+};
+
+
+FunctionDecl: FunctionDecl = {
+    "function" <name:"id"> "(" <params:ParamList> ")" <return_type:(":" <TypeRef>)?> "=>" <body:Expr> ";" => FunctionDecl {name, params, return_type, body,},
+    "function" <name:"id"> "(" <params:ParamList> ")" <return_type:(":" <TypeRef>)?> <body:BlockExpr> => FunctionDecl {name, params, return_type, body,},
+}
+
+ParamList: Vec<Param> = {
+    => vec![],
+    <p:Param> => vec![p],
+    <mut l:ParamList> "," <p:Param> => { l.push(p); l }
+}
+
+Param: Param = {
+    <name:"id"> ":" <type_info:TypeRef> "*" => Param { name, types: Some(type_info), is_variadic: true },
+    <name:"id"> ":" <type_info:TypeRef> => Param { name, types: Some(type_info), is_variadic: false },
+    <name:"id"> => Param { name, types: None, is_variadic: false },
+}
+
+Expr: Expr={
+    IfExpr,
+    WhileExpr,
+    ForExpr,
+    LambdaExpr,
+    NewExpr,
+    MatchExpr,
+    BlockExpr,
+    LetExpr,
+    AssignExpr,
+}
+
+IfExpr: Expr = {
+    "if" "(" <condition: Expr> ")" <then_branch: Expr> <elif_branches:("elif" "(" <Expr> ")" <Expr>)*> "else" <else_branch: Expr> =>
+    mk_expr(KindExpr::If(IfExpr {condition: Box::new(condition), then_branch: Box::new(then_branch), elif_branches, else_branch: Box::new(else_branch)}))
+}
+
+WhileExpr: Expr = {
+    "while" "(" <cond:Expr> ")" <body:Expr> => mk_expr(KindExpr::While(WhileExpr { condition: Box::new(cond), body: Box::new(body),}))
+}
+
+ForExpr : Expr = {
+    "for" "(" <var: "id"> "in" <iterable: Expr> ")" <body: Expr> => mk_expr(KindExpr::For(ForExpr { variable: var, iterable: Box::new(iterable), body: Box::new(body) }))
+}
+
+LambdaExpr: Expr = {
+    "lambda" "(" <params:ParamList> ")" <return_type:(":" <TypeRef>)?> "=>" <body:Expr> => mk_expr(KindExpr::Lambda(LambdaExpr { params, return_type, body: Box::new(body)})),
+}
+
+NewExpr: Expr = {
+    "new" <type_name:"id"> "(" <arguments:ArgList> ")" => mk_expr(KindExpr::New(NewExpr { type_name, arguments })),
+}
+
+MatchExpr: Expr = {
+    "match" <expr:Expr> "{" <cases:MatchCaseList> "}" => mk_expr(KindExpr::Match(MatchExpr { expression: Box::new(expr), cases, })),
+}
+
+MatchCaseList: Vec<MatchCase> = {
+    <c:MatchCase> => vec![c],
+    <mut l:MatchCaseList> <c:MatchCase> => { l.push(c); l },
+}
+
+MatchCase: MatchCase = {
+    "case" <pattern:MatchPattern> "=>" <body:Expr> ";" => MatchCase { pattern, body },
+    "default" "=>" <body:Expr> ";" => MatchCase { pattern: Pattern::Default, body },
+}
+
+MatchPattern: Pattern = {
+    "(" <left:MatchPattern> <op:BinaryOp> <right:MatchPattern> ")" => Pattern::Binary { left: Box::new(left), operator: op, right: Box::new(right) },
+    <op:UnaryOp> <operand:MatchPattern> => Pattern::Unary { operator: op, operand: Box::new(operand) },
+    <name:"id"> <type_res:(":" <TypeRef>)?> => Pattern::Identifier { name, type_restriction: type_res },
+    <literal:LiteralPattern> => Pattern::Literal(literal),
+}
+    
+BinaryOp: BinaryOperator = {
+    "+" => BinaryOperator::Add,
+    "-" => BinaryOperator::Sub,
+    "*" => BinaryOperator::Mul,
+    "/" => BinaryOperator::Div,
+    "^" => BinaryOperator::Pow,
+    "%" => BinaryOperator::Mod,
+    "==" => BinaryOperator::Equal,
+    "!=" => BinaryOperator::NotEqual,
+    "<" => BinaryOperator::Less,
+    ">" => BinaryOperator::Greater,
+    "<=" => BinaryOperator::LessEqual,
+    ">=" => BinaryOperator::GreaterEqual,
+    "&" => BinaryOperator::And,
+    "|" => BinaryOperator::Or,
+    "@" => BinaryOperator::Concat,
+    "@@" => BinaryOperator::FullConcat,
+}
+
+UnaryOp: UnaryOperator = {
+    "!" => UnaryOperator::Not,
+    "-" => UnaryOperator::Negate,
+}
+
+LiteralPattern: LiteralValue = {
+    "num" => LiteralValue::Number(<>),
+    "str" => LiteralValue::String(<>),
+    "true" => LiteralValue::Bool(true),
+    "false" => LiteralValue::Bool(false),
+}
+
+BlockExpr: Expr = {
+    "{" <exprs:ExprList> "}" => { mk_expr(KindExpr::Block(BlockExpr { expressions: exprs,}))}
+}
+
+ExprList: Vec<Expr> = {
+    <e:Expr> => vec![e],
+    <mut list:ExprList> ";" <e:Expr> => {list.push(e); list},
+    <mut list:ExprList> ";" => list
+}
+
+LetExpr: Expr = {
+    "let" <bindings : BindingList> "in" <body: Expr> => mk_expr(KindExpr:: Let(LetExpr { bindings: bindings, body: Box::new(body) })) 
+}
+
+BindingList: Vec<LetBinding> = {
+    <b: Binding> => vec![b],
+    <mut list: BindingList> "," <b: Binding> => { list.push(b); list }
+}
+
+Binding: LetBinding = {
+    <name: "id"> <types: (":" <TypeRef>)?> "=" <initializer: Expr> => LetBinding { name, types, initializer }
+}
+
+AssignExpr: Expr = {
+    <target:CallExpr> ":=" <value:Expr> => mk_expr(KindExpr::Assign(AssignExpr {target: Box::new(target), value: Box::new(value),})),
+    LogOrExpr,
+}
+
+LogOrExpr: Expr = {
+    <left: LogOrExpr> "|" <right: LogAndExpr> => mk_expr(KindExpr:: Binary(BinaryExpr { left: Box::new(left), operator: BinaryOperator::Or, right: Box::new(right) })),
+    LogAndExpr
+}
+
+LogAndExpr: Expr = {
+    <left: LogAndExpr> "&" <right: EqExpr> => mk_expr(KindExpr:: Binary(BinaryExpr { left: Box::new(left), operator: BinaryOperator::And, right: Box::new(right) })),
+    EqExpr
+}
+
+EqExpr: Expr = {
+    <left: EqExpr> "==" <right: CmpExpr> => mk_expr(KindExpr:: Binary(BinaryExpr { left: Box::new(left), operator: BinaryOperator::Equal, right: Box::new(right) })),
+    <left: EqExpr> "!=" <right: CmpExpr> => mk_expr(KindExpr:: Binary(BinaryExpr { left: Box::new(left), operator: BinaryOperator::NotEqual, right: Box::new(right) })),
+    CmpExpr
+}
+
+CmpExpr: Expr = {
+    <left: TypeExpr> "<" <right: TypeExpr> => mk_expr(KindExpr:: Binary(BinaryExpr { left: Box::new(left), operator: BinaryOperator::Less, right: Box::new(right) })),
+    <left: TypeExpr> ">" <right: TypeExpr> => mk_expr(KindExpr:: Binary(BinaryExpr { left: Box::new(left), operator: BinaryOperator::Greater, right: Box::new(right) })),
+    <left: TypeExpr> "<=" <right: TypeExpr> => mk_expr(KindExpr:: Binary(BinaryExpr { left: Box::new(left), operator: BinaryOperator::LessEqual, right: Box::new(right) })),
+    <left: TypeExpr> ">=" <right: TypeExpr> => mk_expr(KindExpr:: Binary(BinaryExpr { left: Box::new(left), operator: BinaryOperator::GreaterEqual, right: Box::new(right) })),
+    TypeExpr
+}
+
+TypeExpr: Expr = {
+    <expr: TypeExpr> "is" <type_info: TypeRef> => mk_expr(KindExpr::Is(IsExpr { expression: Box::new(expr), type_info })),
+    <expr: TypeExpr> "as" <type_info: TypeRef> => mk_expr(KindExpr::As(AsExpr { expression: Box::new(expr), type_info })),
+    StringExpr
+}
+
+#[inline]
+BaseTypeRef: TypeRef = {
+    "Number" => TypeRef::Number,
+    "String" => TypeRef::String,
+    "Boolean" => TypeRef::Boolean,
+    <name: "id"> => TypeRef::Custom(name)
+}
+
+TypeRef: TypeRef = {
+    <base:BaseTypeRef> <arrays:ArraySuffix*> => {
+        arrays.into_iter().fold(base, |acc, _| TypeRef::Vector(Box::new(acc)))
+    },
+    "(" <params:FunctionParamList> ")" "->" <return_type:TypeRef> => {
+        TypeRef::Function(params, Box::new(return_type))
+    }
+}
+
+FunctionParamList: Vec<TypeRef> = {
+    => vec![],
+    <t:TypeRef> => vec![t],
+    <mut l:FunctionParamList> "," <t:TypeRef> => {
+        l.push(t);
+        l
+    }
+}
+
+ArraySuffix: () = {
+    "[" "]" => ()
+}
+
+StringExpr: Expr = {
+    <left: StringExpr> "@" <right: ArithExpr> => mk_expr(KindExpr:: Binary(BinaryExpr { left: Box::new(left), operator: BinaryOperator::Concat, right: Box::new(right) })),
+    <left: StringExpr> "@@" <right: ArithExpr> => mk_expr(KindExpr:: Binary(BinaryExpr { left: Box::new(left), operator: BinaryOperator::FullConcat, right: Box::new(right) })),
+    ArithExpr  
+}
+
+
+ArithExpr: Expr = {
+    <left: ArithExpr> "+" <right: MulExpr> => mk_expr(KindExpr:: Binary(BinaryExpr { left: Box::new(left), operator: BinaryOperator::Add, right: Box::new(right) })),
+    <left: ArithExpr> "-" <right: MulExpr> => mk_expr(KindExpr:: Binary(BinaryExpr { left: Box::new(left), operator: BinaryOperator::Sub, right: Box::new(right) })),
+    MulExpr
+}
+
+MulExpr: Expr = {
+    <left: MulExpr> "*" <right: PowExpr> => mk_expr(KindExpr:: Binary(BinaryExpr { left: Box::new(left), operator: BinaryOperator::Mul, right: Box::new(right) })),
+    <left: MulExpr> "/" <right: PowExpr> => mk_expr(KindExpr:: Binary(BinaryExpr { left: Box::new(left), operator: BinaryOperator::Div, right: Box::new(right) })),
+    <left: MulExpr> "%" <right: PowExpr> => mk_expr(KindExpr:: Binary(BinaryExpr { left: Box::new(left), operator: BinaryOperator::Mod, right: Box::new(right) })),
+    PowExpr
+}
+
+PowExpr: Expr = {
+    <left: UnaryExpr> "^" <right: PowExpr> => mk_expr(KindExpr:: Binary(BinaryExpr { left: Box::new(left), operator: BinaryOperator::Pow, right: Box::new(right) })),
+    UnaryExpr
+}
+
+UnaryExpr: Expr = {
+    "!" <right: UnaryExpr> => mk_expr(KindExpr::Unary(UnaryExpr { operator: UnaryOperator:: Not, right: Box::new(right) })),
+    "-" <right: UnaryExpr> => mk_expr(KindExpr::Unary(UnaryExpr { operator: UnaryOperator::Negate, right: Box::new(right) })),
+    CallExpr,
+}
+
+CallExpr: Expr = {
+    <callee:CallExpr> "(" <args:ArgList> ")" <block:MacroBlockExpr> => {
+        let arguments = args;
+        match callee.kind {
+            KindExpr::Variable(var) => {
+                let macro_arguments = arguments
+                    .into_iter()
+                    .map(|value| MacroCallArg { kind: MacroParamKind::Normal, value })
+                    .collect();
+
+                mk_expr(KindExpr::MacroCall(MacroCallExpr {
+                    name: var.name,
+                    arguments: macro_arguments,
+                    action: Some(Box::new(block)),
+                }))
+            }
+            other_kind => {
+                let mut all_arguments = arguments;
+                all_arguments.push(block);
+                mk_expr(KindExpr::Call(CallExpr {
+                    callee: Box::new(mk_expr(other_kind)),
+                    arguments: all_arguments,
+                }))
+            }
+        }
+    },
+    <callee:CallExpr> "(" <macro_args:MacroMarkedArgList> ")" => {
+        match callee.kind {
+            KindExpr::Variable(var) => {
+                mk_expr(KindExpr::MacroCall(MacroCallExpr {
+                    name: var.name,
+                    arguments: macro_args,
+                    action: None,
+                }))
+            }
+            other_kind => {
+                let arguments = macro_args.into_iter().map(|arg| arg.value).collect();
+                mk_expr(KindExpr::Call(CallExpr {
+                    callee: Box::new(mk_expr(other_kind)),
+                    arguments,
+                }))
+            }
+        }
+    },
+    <callee:CallExpr> "(" <args:ArgList> ")" => {mk_expr(KindExpr::Call(CallExpr { callee: Box::new(callee), arguments: args }))},
+    <obj:CallExpr> "." <field:"id"> => {mk_expr(KindExpr::MemberAccess(MemberAccessExpr { object: Box::new(obj), field }))},
+    <obj:CallExpr> "[" <index:Expr> "]" => {mk_expr(KindExpr::Index(IndexExpr { object: Box::new(obj), index: Box::new(index) }))},
+    PrimaryExpr,
+}
+
+MacroBlockExpr: Expr = {
+    "macro_lbrace" <exprs:ExprList> "}" => mk_expr(KindExpr::Block(BlockExpr { expressions: exprs }))
+}
+
+MacroMarkedArgList: Vec<MacroCallArg> = {
+    <arg:MacroMarkedArg> => vec![arg],
+    <mut list:MacroMarkedArgList> "," <arg:MacroMarkedArg> => {
+        list.push(arg);
+        list
+    }
+}
+
+MacroMarkedArg: MacroCallArg = {
+    "@" <value:Expr> => MacroCallArg { kind: MacroParamKind::Symbolic, value },
+    "$" <value:Expr> => MacroCallArg { kind: MacroParamKind::Placeholder, value },
+}
+
+ArgList: Vec<Expr> = {
+    => vec![],
+    <e:Expr> => vec![e],
+    <mut l:ArgList> "," <e:Expr> => { l.push(e); l }
+}
+
+PrimaryExpr: Expr= {
+    "base" "(" <args:ArgList> ")" => mk_expr(KindExpr::BaseCall(BaseCallExpr { arguments: args })),
+    "num" => mk_expr(KindExpr:: Literal(LiteralExpr { value: LiteralValue::Number(<>) }) ),
+    "str" => mk_expr(KindExpr:: Literal(LiteralExpr { value: LiteralValue::String(<>) }) ),
+    "true" => mk_expr(KindExpr:: Literal(LiteralExpr { value: LiteralValue::Bool(true) }) ),
+    "false" => mk_expr(KindExpr:: Literal(LiteralExpr { value: LiteralValue::Bool(false) }) ),
+    "self" => mk_expr(KindExpr:: Variable(VariableExpr { name: "self".to_string()})),
+    "id" => mk_expr(KindExpr:: Variable(VariableExpr { name: <>})),
+    "[" <element:Expr> "||" <variable:"id"> "in" <iterable:Expr> "]" => mk_expr(KindExpr::ArrayComprehension(ArrayComprehensionExpr { element: Box::new(element), variable, iterable: Box::new(iterable) })),
+    "[" <elements:ElementList> "]" => mk_expr(KindExpr::Array(ArrayExpr { elements })),
+    "(" <Expr> ")" => <>,
+}
+
+ElementList: Vec<Expr> = {
+    => vec![],
+    <e:Expr> => vec![e],
+    <mut l:ElementList> "," <e:Expr> => { l.push(e); l }
+}
