@@ -1,9 +1,15 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
 use crate::diagnostics::{Diagnostic, DiagnosticCollector};
 use crate::symbol_table::{Symbol, SymbolKind, SymbolTable};
 use crate::types::SemanticType;
+
+#[derive(Clone)]
+struct ParentLink {
+    parent: String,
+    span: Span,
+}
 
 #[derive(Debug)]
 pub struct SemanticAnalysis {
@@ -15,20 +21,27 @@ pub struct SemanticAnalyzer {
     diagnostics: DiagnosticCollector,
     inferred_types: HashMap<NodeId, SemanticType>,
     current_return_type: Option<SemanticType>,
+    type_parents: HashMap<String, ParentLink>,
+    protocol_parents: HashMap<String, ParentLink>,
 }
 
 impl SemanticAnalyzer {
     pub fn new() -> Self {
-        Self {
+        let mut analyzer = Self {
             symbols: SymbolTable::new(),
             diagnostics: DiagnosticCollector::new(),
             inferred_types: HashMap::new(),
             current_return_type: None,
-        }
+            type_parents: HashMap::new(),
+            protocol_parents: HashMap::new(),
+        };
+        analyzer.install_prelude();
+        analyzer
     }
 
     pub fn analyze(mut self, program: &Program) -> Result<SemanticAnalysis, Vec<Diagnostic>> {
         self.collect_top_level(program);
+        self.validate_hierarchies();
 
         for item in &program.items {
             self.check_item(item);
@@ -50,7 +63,7 @@ impl SemanticAnalyzer {
                     let params = func
                         .params
                         .iter()
-                        .map(|p| self.resolve_type_ref(p.types.as_ref()))
+                        .map(|p| self.resolve_type_ref(p.types.as_ref(), func.body.span))
                         .collect::<Vec<_>>();
                     let ret = func
                         .return_type
@@ -65,6 +78,16 @@ impl SemanticAnalyzer {
                 }
                 Item::Type(typ) => {
                     self.define_symbol(&typ.name, SymbolKind::Type, SemanticType::Custom(typ.name.clone()));
+
+                    if let Some(TypeRef::Custom(parent_name)) = &typ.parent {
+                        self.type_parents.insert(
+                            typ.name.clone(),
+                            ParentLink {
+                                parent: parent_name.clone(),
+                                span: self.type_decl_span(typ),
+                            },
+                        );
+                    }
                 }
                 Item::Protocol(proto) => {
                     self.define_symbol(
@@ -72,6 +95,16 @@ impl SemanticAnalyzer {
                         SymbolKind::Protocol,
                         SemanticType::Custom(proto.name.clone()),
                     );
+
+                    if let Some(TypeRef::Custom(parent_name)) = proto.parent.as_deref() {
+                        self.protocol_parents.insert(
+                            proto.name.clone(),
+                            ParentLink {
+                                parent: parent_name.clone(),
+                                span: self.protocol_decl_span(proto),
+                            },
+                        );
+                    }
                 }
                 Item::Macro(macr) => {
                     self.define_symbol(&macr.name, SymbolKind::Macro, SemanticType::Unknown);
@@ -96,7 +129,7 @@ impl SemanticAnalyzer {
     fn check_function_decl(&mut self, func: &FunctionDecl) {
         self.symbols.enter_scope();
         for param in &func.params {
-            let typ = self.resolve_type_ref(param.types.as_ref());
+            let typ = self.resolve_type_ref(param.types.as_ref(), func.body.span);
             self.define_local(&param.name, SymbolKind::Variable, typ, func.body.span);
         }
 
@@ -122,20 +155,29 @@ impl SemanticAnalyzer {
 
     fn check_type_decl(&mut self, typ: &TypeDecl) {
         if let Some(parent) = &typ.parent {
-            let parent_type = self.resolve_type_ref(Some(parent));
+            let parent_type = self.resolve_type_ref(Some(parent), self.type_decl_span(typ));
             if !matches!(parent_type, SemanticType::Custom(_)) {
                 self.diagnostics.error(
                     format!("El padre de {} debe ser un tipo nombrado", typ.name),
-                    Span { start: 0, end: 0 },
+                    self.type_decl_span(typ),
                 );
             }
         }
 
         self.symbols.enter_scope();
+        let mut field_names = HashSet::new();
+        let mut method_names = HashSet::new();
 
         for field in &typ.fields {
+            if !field_names.insert(field.name.clone()) {
+                self.diagnostics.error(
+                    format!("Campo duplicado en {}: {}", typ.name, field.name),
+                    field.initializer.span,
+                );
+            }
+
             let init_ty = self.check_expr(&field.initializer);
-            let declared = self.resolve_type_ref(field.type_annotation.as_ref());
+            let declared = self.resolve_type_ref(field.type_annotation.as_ref(), field.initializer.span);
             if !declared.is_assignable_from(&init_ty) {
                 self.diagnostics.error(
                     format!(
@@ -154,6 +196,12 @@ impl SemanticAnalyzer {
         }
 
         for method in &typ.methods {
+            if !method_names.insert(method.name.clone()) {
+                self.diagnostics.error(
+                    format!("Metodo duplicado en {}: {}", typ.name, method.name),
+                    method.body.span,
+                );
+            }
             self.check_function_decl(method);
         }
 
@@ -162,12 +210,36 @@ impl SemanticAnalyzer {
 
     fn check_protocol_decl(&mut self, proto: &ProtocolDecl) {
         if let Some(parent) = &proto.parent {
-            let parent_type = self.resolve_type_ref(Some(parent.as_ref()));
+            let parent_type = self.resolve_type_ref(Some(parent.as_ref()), self.protocol_decl_span(proto));
             if !matches!(parent_type, SemanticType::Custom(_)) {
                 self.diagnostics.error(
                     format!("El protocolo {} debe extender otro protocolo por nombre", proto.name),
-                    Span { start: 0, end: 0 },
+                    self.protocol_decl_span(proto),
                 );
+            }
+        }
+
+        let mut signatures: HashMap<String, (usize, SemanticType)> = HashMap::new();
+        for method in &proto.methods {
+            let param_types = method
+                .params
+                .iter()
+                .map(|p| self.resolve_type_ref(p.types.as_ref(), self.protocol_decl_span(proto)))
+                .collect::<Vec<_>>();
+            let ret = SemanticType::from_type_ref(&method.return_type);
+
+            if let Some((expected_arity, expected_ret)) = signatures.get(&method.name) {
+                if *expected_arity != param_types.len() || expected_ret != &ret {
+                    self.diagnostics.error(
+                        format!(
+                            "Firma incompatible duplicada en protocolo {} para metodo {}",
+                            proto.name, method.name
+                        ),
+                        self.protocol_decl_span(proto),
+                    );
+                }
+            } else {
+                signatures.insert(method.name.clone(), (param_types.len(), ret));
             }
         }
     }
@@ -175,7 +247,7 @@ impl SemanticAnalyzer {
     fn check_macro_decl(&mut self, macr: &MacroDecl) {
         self.symbols.enter_scope();
         for param in &macr.params {
-            let typ = self.resolve_type_ref(param.type_info.as_ref());
+            let typ = self.resolve_type_ref(param.type_info.as_ref(), macr.body.span);
             self.define_local(&param.name, SymbolKind::Variable, typ, macr.body.span);
         }
         self.check_expr(&macr.body);
@@ -278,7 +350,8 @@ impl SemanticAnalyzer {
                 self.symbols.enter_scope();
                 for binding in &let_expr.bindings {
                     let init_ty = self.check_expr(&binding.initializer);
-                    let declared = self.resolve_type_ref(binding.types.as_ref());
+                    let declared =
+                        self.resolve_type_ref(binding.types.as_ref(), binding.initializer.span);
                     if !declared.is_assignable_from(&init_ty) {
                         self.diagnostics.error(
                             format!(
@@ -422,7 +495,7 @@ impl SemanticAnalyzer {
                 self.symbols.enter_scope();
                 let mut params = Vec::new();
                 for param in &lambda.params {
-                    let param_ty = self.resolve_type_ref(param.types.as_ref());
+                    let param_ty = self.resolve_type_ref(param.types.as_ref(), expr.span);
                     self.define_local(&param.name, SymbolKind::Variable, param_ty.clone(), expr.span);
                     params.push(param_ty);
                 }
@@ -456,12 +529,12 @@ impl SemanticAnalyzer {
             }
             KindExpr::Is(is_expr) => {
                 self.check_expr(&is_expr.expression);
-                let _ = self.resolve_type_ref(Some(&is_expr.type_info));
+                let _ = self.resolve_type_ref(Some(&is_expr.type_info), expr.span);
                 SemanticType::Boolean
             }
             KindExpr::As(as_expr) => {
                 self.check_expr(&as_expr.expression);
-                self.resolve_type_ref(Some(&as_expr.type_info))
+                self.resolve_type_ref(Some(&as_expr.type_info), expr.span)
             }
             KindExpr::Match(match_expr) => {
                 self.check_expr(&match_expr.expression);
@@ -487,7 +560,7 @@ impl SemanticAnalyzer {
                 name,
                 type_restriction,
             } => {
-                let typ = self.resolve_type_ref(type_restriction.as_ref());
+                let typ = self.resolve_type_ref(type_restriction.as_ref(), Span { start: 0, end: 0 });
                 self.define_local(name, SymbolKind::Variable, typ, Span { start: 0, end: 0 });
             }
             Pattern::Binary { left, right, .. } => {
@@ -540,7 +613,7 @@ impl SemanticAnalyzer {
         }
     }
 
-    fn resolve_type_ref(&mut self, type_ref: Option<&TypeRef>) -> SemanticType {
+    fn resolve_type_ref(&mut self, type_ref: Option<&TypeRef>, span: Span) -> SemanticType {
         let Some(type_ref) = type_ref else {
             return SemanticType::Unknown;
         };
@@ -549,10 +622,8 @@ impl SemanticAnalyzer {
         if let SemanticType::Custom(name) = &resolved
             && self.symbols.lookup(name).is_none()
         {
-            self.diagnostics.error(
-                format!("Tipo no definido: {}", name),
-                Span { start: 0, end: 0 },
-            );
+            self.diagnostics
+                .error(format!("Tipo no definido: {}", name), span);
         }
 
         resolved
@@ -565,6 +636,130 @@ impl SemanticAnalyzer {
                 span,
             );
         }
+    }
+
+    fn install_prelude(&mut self) {
+        // Builtins base para evitar falsos errores semanticos en programas validos.
+        self.define_builtin_function("print", vec![SemanticType::Unknown], SemanticType::Unknown);
+        self.define_builtin_function(
+            "range",
+            vec![SemanticType::Number, SemanticType::Number],
+            SemanticType::Vector(Box::new(SemanticType::Number)),
+        );
+        self.define_builtin_function(
+            "sqrt",
+            vec![SemanticType::Number],
+            SemanticType::Number,
+        );
+        self.define_builtin_function("sin", vec![SemanticType::Number], SemanticType::Number);
+        self.define_builtin_function("cos", vec![SemanticType::Number], SemanticType::Number);
+        self.define_builtin_function("exp", vec![SemanticType::Number], SemanticType::Number);
+        self.define_builtin_function(
+            "log",
+            vec![SemanticType::Number, SemanticType::Number],
+            SemanticType::Number,
+        );
+        self.define_builtin_function("rand", vec![], SemanticType::Number);
+    }
+
+    fn define_builtin_function(
+        &mut self,
+        name: &str,
+        params: Vec<SemanticType>,
+        ret: SemanticType,
+    ) {
+        let _ = self.symbols.define(Symbol {
+            name: name.to_string(),
+            kind: SymbolKind::Function,
+            typ: SemanticType::Function(params, Box::new(ret)),
+        });
+    }
+
+    fn validate_hierarchies(&mut self) {
+        for (child, link) in &self.type_parents {
+            match self.symbols.lookup(&link.parent) {
+                Some(symbol) if symbol.kind == SymbolKind::Type => {}
+                Some(_) => {
+                    self.diagnostics.error(
+                        format!(
+                            "{} hereda de {}, pero {} no es un tipo",
+                            child, link.parent, link.parent
+                        ),
+                        link.span,
+                    );
+                }
+                None => {
+                    self.diagnostics.error(
+                        format!("Tipo padre no definido: {} (usado por {})", link.parent, child),
+                        link.span,
+                    );
+                }
+            }
+        }
+
+        for (child, link) in &self.protocol_parents {
+            match self.symbols.lookup(&link.parent) {
+                Some(symbol) if symbol.kind == SymbolKind::Protocol => {}
+                Some(_) => {
+                    self.diagnostics.error(
+                        format!(
+                            "{} extiende {}, pero {} no es un protocolo",
+                            child, link.parent, link.parent
+                        ),
+                        link.span,
+                    );
+                }
+                None => {
+                    self.diagnostics.error(
+                        format!(
+                            "Protocolo padre no definido: {} (usado por {})",
+                            link.parent, child
+                        ),
+                        link.span,
+                    );
+                }
+            }
+        }
+
+        let type_parents = self.type_parents.clone();
+        let protocol_parents = self.protocol_parents.clone();
+        self.detect_cycles(&type_parents, "herencia de tipos");
+        self.detect_cycles(&protocol_parents, "extension de protocolos");
+    }
+
+    fn detect_cycles(&mut self, parents: &HashMap<String, ParentLink>, label: &str) {
+        for start in parents.keys() {
+            let mut visiting = HashSet::new();
+            let mut current = start.as_str();
+
+            while let Some(next) = parents.get(current) {
+                if !visiting.insert(current.to_string()) {
+                    self.diagnostics.error(
+                        format!("Ciclo detectado en {} que involucra {}", label, current),
+                        next.span,
+                    );
+                    break;
+                }
+                current = &next.parent;
+            }
+        }
+    }
+
+    fn type_decl_span(&self, typ: &TypeDecl) -> Span {
+        if let Some(expr) = typ.parent_arg.first() {
+            return expr.span;
+        }
+        if let Some(field) = typ.fields.first() {
+            return field.initializer.span;
+        }
+        if let Some(method) = typ.methods.first() {
+            return method.body.span;
+        }
+        Span { start: 0, end: 0 }
+    }
+
+    fn protocol_decl_span(&self, _proto: &ProtocolDecl) -> Span {
+        Span { start: 0, end: 0 }
     }
 
     fn define_symbol(&mut self, name: &str, kind: SymbolKind, typ: SemanticType) {
