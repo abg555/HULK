@@ -86,3 +86,101 @@ type Foo {
         .iter()
         .any(|d| d.message.contains("Metodo duplicado")));
 }
+
+#[test]
+fn assigns_unique_node_ids_for_inferred_types() {
+    let analysis = analyze_program("let x = 1 in x + 2").expect("expected semantic success");
+
+    assert!(
+        analysis.inferred_types.len() >= 4,
+        "expected multiple expression ids, got {}",
+        analysis.inferred_types.len()
+    );
+}
+
+#[test]
+fn rejects_invalid_assignment_target() {
+    let diagnostics = analyze_program("(1 + 2) := 3")
+        .expect_err("expected assignment target semantic error");
+
+    assert!(diagnostics
+        .iter()
+        .any(|d| d.message.contains("lado izquierdo de ':='")));
+}
+
+#[test]
+fn validates_member_access_against_type_shape() {
+    let ok_program = r#"
+type Foo {
+  value: Number = 1;
+}
+let x = new Foo() in x.value
+"#;
+    assert!(analyze_program(ok_program).is_ok());
+
+    let bad_program = r#"
+type Foo {
+  value: Number = 1;
+}
+let x = new Foo() in x.missing
+"#;
+    let diagnostics = analyze_program(bad_program).expect_err("expected missing member error");
+    assert!(diagnostics
+        .iter()
+        .any(|d| d.message.contains("no define el miembro")));
+}
+
+#[test]
+fn validates_constructor_arguments() {
+    let input = r#"
+type Point(x: Number, y: Number) {
+  value: Number = 0;
+}
+new Point(1)
+"#;
+    let diagnostics = analyze_program(input).expect_err("expected constructor arity error");
+    assert!(diagnostics
+        .iter()
+        .any(|d| d.message.contains("Constructor de Point espera")));
+}
+
+#[test]
+fn accepts_type_conforming_to_protocol() {
+        let input = r#"
+protocol Printable {
+    show(): String;
+}
+
+type Person {
+    show() => "ok";
+}
+
+function render(x: Printable): String => x.show();
+render(new Person())
+"#;
+
+        let result = analyze_program(input);
+        assert!(result.is_ok(), "expected protocol conformance, got: {result:?}");
+}
+
+#[test]
+fn rejects_type_missing_protocol_member() {
+        let input = r#"
+protocol Printable {
+    show(): String;
+}
+
+type Person {
+    name: String = "Ana";
+}
+
+function render(x: Printable): String => x.show();
+render(new Person())
+"#;
+
+        let diagnostics = analyze_program(input).expect_err("expected protocol conformance error");
+    assert!(diagnostics.iter().any(|d| {
+        d.message.contains("Argumento 1 incompatible")
+            || d.message.contains("no define el miembro show")
+    }));
+}
