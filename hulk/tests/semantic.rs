@@ -184,3 +184,161 @@ render(new Person())
             || d.message.contains("no define el miembro show")
     }));
 }
+
+#[test]
+fn rejects_non_exhaustive_boolean_match() {
+    let input = r#"
+let x: Boolean = true in match x {
+  case true => 1;
+}
+"#;
+
+    let diagnostics = analyze_program(input).expect_err("expected non-exhaustive match error");
+    assert!(diagnostics
+        .iter()
+        .any(|d| d.message.contains("Boolean no exhaustivo")));
+}
+
+#[test]
+fn accepts_exhaustive_boolean_match_with_default() {
+    let input = r#"
+let x: Boolean = true in match x {
+  case true => 1;
+  default => 0;
+}
+"#;
+
+    let result = analyze_program(input);
+    assert!(result.is_ok(), "expected valid exhaustive match, got: {result:?}");
+}
+
+#[test]
+fn rejects_incompatible_match_literal_pattern() {
+    let input = r#"
+let x: Number = 42 in match x {
+  case "hello" => 1;
+  default => 0;
+}
+"#;
+
+    let diagnostics = analyze_program(input).expect_err("expected incompatible pattern error");
+    assert!(diagnostics
+        .iter()
+        .any(|d| d.message.contains("Literal de patron incompatible")));
+}
+
+#[test]
+fn narrows_scrutinee_variable_in_match_branch() {
+        let input = r#"
+type Animal {}
+
+type Dog inherits Animal {
+    bark(): String => "woof";
+}
+
+let a: Animal = new Dog() in match a {
+    case d: Dog => a.bark();
+    default => "none";
+}
+"#;
+
+        let result = analyze_program(input);
+        assert!(result.is_ok(), "expected branch narrowing to allow a.bark(), got: {result:?}");
+}
+
+#[test]
+fn rejects_unreachable_case_after_default() {
+        let input = r#"
+match true {
+    default => 0;
+    case true => 1;
+}
+"#;
+
+        let diagnostics = analyze_program(input).expect_err("expected unreachable case error");
+        assert!(diagnostics
+                .iter()
+                .any(|d| d.message.contains("Caso inalcanzable")));
+}
+
+#[test]
+fn rejects_duplicate_boolean_case_pattern() {
+        let input = r#"
+match true {
+    case true => 1;
+    case true => 2;
+    case false => 3;
+}
+"#;
+
+        let diagnostics = analyze_program(input).expect_err("expected duplicate case error");
+        assert!(diagnostics
+                .iter()
+                .any(|d| d.message.contains("Patron duplicado: case true")));
+}
+
+#[test]
+fn accepts_compatible_method_override() {
+        let input = r#"
+type Animal {
+    speak(): String => "...";
+}
+
+type Dog inherits Animal {
+    speak(): String => "woof";
+}
+
+let x: Animal = new Dog() in x.speak()
+"#;
+
+        let result = analyze_program(input);
+        assert!(result.is_ok(), "expected compatible override, got: {result:?}");
+}
+
+#[test]
+fn rejects_incompatible_method_override() {
+        let input = r#"
+type Animal {
+    speak(): String => "...";
+}
+
+type Dog inherits Animal {
+    speak(): Number => 1;
+}
+
+new Dog()
+"#;
+
+        let diagnostics = analyze_program(input).expect_err("expected override compatibility error");
+        assert!(diagnostics
+                .iter()
+                .any(|d| d.message.contains("Override incompatible")));
+}
+
+#[test]
+fn narrows_variable_type_with_is_in_if() {
+    let input = r#"
+type Animal {}
+
+type Dog inherits Animal {
+    bark(): String => "woof";
+}
+
+let a: Animal = new Dog() in if (a is Dog) a.bark() else "none"
+"#;
+
+        let result = analyze_program(input);
+        assert!(result.is_ok(), "expected narrowing with is in if, got: {result:?}");
+}
+
+#[test]
+fn rejects_incompatible_as_cast() {
+    let input = r#"
+let x: Number = 42 in x as String
+"#;
+
+        let diagnostics = analyze_program(input).expect_err("expected invalid cast error");
+        assert!(diagnostics
+            .iter()
+            .any(|d| d.message.contains("Cast 'as' incompatible")));
+}

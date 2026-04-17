@@ -88,7 +88,7 @@ pub fn mk_expr(kind: KindExpr) -> Expr {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeId(pub u32); //el campo id es de tipo NodeId que realmente es u32
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Span {
     pub start: usize, //posiciones dentro de un string, y los strings en Rust se indexan con usize
     pub end: usize,

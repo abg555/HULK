@@ -267,6 +267,16 @@ impl SemanticAnalyzer {
                 );
             }
 
+            if let Some(parent_member) = self.lookup_member_type_in_parent_chain(&typ.name, &field.name) {
+                self.diagnostics.error(
+                    format!(
+                        "El campo {} en {} colisiona con miembro heredado de tipo {}",
+                        field.name, typ.name, parent_member
+                    ),
+                    field.initializer.span,
+                );
+            }
+
             let init_ty = self.check_expr(&field.initializer);
             let declared = self.resolve_type_ref(field.type_annotation.as_ref(), field.initializer.span);
             if !self.is_compatible_type(&declared, &init_ty) {
@@ -293,6 +303,8 @@ impl SemanticAnalyzer {
                     method.body.span,
                 );
             }
+
+            self.validate_method_override(typ, method);
             self.check_function_decl(method);
         }
 
@@ -501,7 +513,17 @@ impl SemanticAnalyzer {
                 let cond_ty = self.check_expr(&if_expr.condition);
                 self.expect_type(expr.span, &cond_ty, &SemanticType::Boolean, "condicion de if");
 
-                let then_ty = self.check_expr(&if_expr.then_branch);
+                let then_ty = if let Some((name, narrowed_type)) =
+                    self.extract_is_narrowing(&if_expr.condition, expr.span)
+                {
+                    self.symbols.enter_scope();
+                    self.define_local(&name, SymbolKind::Variable, narrowed_type, expr.span);
+                    let ty = self.check_expr(&if_expr.then_branch);
+                    self.symbols.exit_scope();
+                    ty
+                } else {
+                    self.check_expr(&if_expr.then_branch)
+                };
                 for (elif_cond, elif_body) in &if_expr.elif_branches {
                     let elif_cond_ty = self.check_expr(elif_cond);
                     self.expect_type(expr.span, &elif_cond_ty, &SemanticType::Boolean, "condicion de elif");
@@ -680,24 +702,111 @@ impl SemanticAnalyzer {
                 SemanticType::Custom(new_expr.type_name.clone())
             }
             KindExpr::Is(is_expr) => {
-                self.check_expr(&is_expr.expression);
-                let _ = self.resolve_type_ref(Some(&is_expr.type_info), expr.span);
+                let expression_ty = self.check_expr(&is_expr.expression);
+                let target_ty = self.resolve_type_ref(Some(&is_expr.type_info), expr.span);
+                if !self.is_compatible_type(&target_ty, &expression_ty)
+                    && !self.is_compatible_type(&expression_ty, &target_ty)
+                {
+                    self.diagnostics.error(
+                        format!(
+                            "Chequeo 'is' incompatible: {} no puede contrastarse con {}",
+                            expression_ty, target_ty
+                        ),
+                        expr.span,
+                    );
+                }
                 SemanticType::Boolean
             }
             KindExpr::As(as_expr) => {
-                self.check_expr(&as_expr.expression);
-                self.resolve_type_ref(Some(&as_expr.type_info), expr.span)
+                let expression_ty = self.check_expr(&as_expr.expression);
+                let target_ty = self.resolve_type_ref(Some(&as_expr.type_info), expr.span);
+                if !self.is_compatible_type(&target_ty, &expression_ty)
+                    && !self.is_compatible_type(&expression_ty, &target_ty)
+                {
+                    self.diagnostics.error(
+                        format!(
+                            "Cast 'as' incompatible: no se puede convertir {} a {}",
+                            expression_ty, target_ty
+                        ),
+                        expr.span,
+                    );
+                }
+                target_ty
             }
             KindExpr::Match(match_expr) => {
-                self.check_expr(&match_expr.expression);
+                let scrutinee_ty = self.check_expr(&match_expr.expression);
+                let scrutinee_name = match &match_expr.expression.kind {
+                    KindExpr::Variable(var) => Some(var.name.as_str()),
+                    _ => None,
+                };
                 let mut merged = SemanticType::Unknown;
+                let mut saw_true_case = false;
+                let mut saw_false_case = false;
+                let mut saw_default_case = false;
+
                 for case in &match_expr.cases {
-                    self.check_pattern(&case.pattern);
+                    if saw_default_case {
+                        self.diagnostics.error(
+                            "Caso inalcanzable: hay un default previo en match",
+                            expr.span,
+                        );
+                    }
+
+                    self.symbols.enter_scope();
+                    self.check_pattern(&case.pattern, &scrutinee_ty, scrutinee_name, expr.span);
                     let case_ty = self.check_expr(&case.body);
+                    self.symbols.exit_scope();
+
+                    match &case.pattern {
+                        Pattern::Literal(LiteralValue::Bool(true)) => {
+                            if saw_true_case {
+                                self.diagnostics.error(
+                                    "Patron duplicado: case true repetido",
+                                    expr.span,
+                                );
+                            }
+                            saw_true_case = true;
+                        }
+                        Pattern::Literal(LiteralValue::Bool(false)) => {
+                            if saw_false_case {
+                                self.diagnostics.error(
+                                    "Patron duplicado: case false repetido",
+                                    expr.span,
+                                );
+                            }
+                            saw_false_case = true;
+                        }
+                        Pattern::Default => {
+                            if saw_default_case {
+                                self.diagnostics.error(
+                                    "Patron duplicado: multiple default en match",
+                                    expr.span,
+                                );
+                            }
+                            saw_default_case = true;
+                        }
+                        _ => {}
+                    }
+
                     if matches!(merged, SemanticType::Unknown) {
                         merged = case_ty;
+                    } else if !self.is_compatible_type(&merged, &case_ty)
+                        && !self.is_compatible_type(&case_ty, &merged)
+                    {
+                        merged = SemanticType::Unknown;
                     }
                 }
+
+                if matches!(scrutinee_ty, SemanticType::Boolean)
+                    && !saw_default_case
+                    && !(saw_true_case && saw_false_case)
+                {
+                    self.diagnostics.error(
+                        "Match sobre Boolean no exhaustivo: faltan casos true/false o default",
+                        expr.span,
+                    );
+                }
+
                 merged
             }
         };
@@ -706,21 +815,99 @@ impl SemanticAnalyzer {
         inferred
     }
 
-    fn check_pattern(&mut self, pattern: &Pattern) {
+    fn check_pattern(
+        &mut self,
+        pattern: &Pattern,
+        scrutinee_ty: &SemanticType,
+        scrutinee_name: Option<&str>,
+        span: Span,
+    ) {
         match pattern {
             Pattern::Identifier {
                 name,
                 type_restriction,
             } => {
-                let typ = self.resolve_type_ref(type_restriction.as_ref(), Span { start: 0, end: 0 });
-                self.define_local(name, SymbolKind::Variable, typ, Span { start: 0, end: 0 });
+                let restricted = self.resolve_type_ref(type_restriction.as_ref(), span);
+                let bound_type = if type_restriction.is_some() {
+                    if !self.is_compatible_type(&restricted, scrutinee_ty)
+                        && !self.is_compatible_type(scrutinee_ty, &restricted)
+                    {
+                        self.diagnostics.error(
+                            format!(
+                                "Pattern incompatible: se esperaba {}, se obtuvo {}",
+                                scrutinee_ty, restricted
+                            ),
+                            span,
+                        );
+                    }
+                    restricted
+                } else {
+                    scrutinee_ty.clone()
+                };
+
+                self.define_local(name, SymbolKind::Variable, bound_type.clone(), span);
+
+                if let Some(scrutinee_name) = scrutinee_name
+                    && scrutinee_name != name
+                {
+                    self.define_local(
+                        scrutinee_name,
+                        SymbolKind::Variable,
+                        bound_type,
+                        span,
+                    );
+                }
             }
             Pattern::Binary { left, right, .. } => {
-                self.check_pattern(left);
-                self.check_pattern(right);
+                self.check_pattern(left, scrutinee_ty, scrutinee_name, span);
+                self.check_pattern(right, scrutinee_ty, scrutinee_name, span);
             }
-            Pattern::Unary { operand, .. } => self.check_pattern(operand),
-            Pattern::Literal(_) | Pattern::Default => {}
+            Pattern::Unary { operand, .. } => {
+                self.check_pattern(operand, scrutinee_ty, scrutinee_name, span)
+            }
+            Pattern::Literal(lit) => {
+                let lit_ty = self.literal_type(lit);
+                if !self.is_compatible_type(scrutinee_ty, &lit_ty)
+                    && !self.is_compatible_type(&lit_ty, scrutinee_ty)
+                {
+                    self.diagnostics.error(
+                        format!(
+                            "Literal de patron incompatible: {} no coincide con {}",
+                            lit_ty, scrutinee_ty
+                        ),
+                        span,
+                    );
+                }
+            }
+            Pattern::Default => {}
+        }
+    }
+
+    fn extract_is_narrowing(&mut self, condition: &Expr, span: Span) -> Option<(String, SemanticType)> {
+        let KindExpr::Is(is_expr) = &condition.kind else {
+            return None;
+        };
+
+        let KindExpr::Variable(var) = &is_expr.expression.kind else {
+            return None;
+        };
+
+        let current_ty = self.check_expr(&is_expr.expression);
+        let narrowed_ty = self.resolve_type_ref(Some(&is_expr.type_info), span);
+        if self.is_compatible_type(&narrowed_ty, &current_ty)
+            || self.is_compatible_type(&current_ty, &narrowed_ty)
+        {
+            Some((var.name.clone(), narrowed_ty))
+        } else {
+            None
+        }
+    }
+
+    fn literal_type(&self, literal: &LiteralValue) -> SemanticType {
+        match literal {
+            LiteralValue::Number(_) => SemanticType::Number,
+            LiteralValue::String(_) => SemanticType::String,
+            LiteralValue::Bool(_) => SemanticType::Boolean,
         }
     }
 
@@ -1054,6 +1241,73 @@ impl SemanticAnalyzer {
         }
 
         None
+    }
+
+    fn lookup_member_type_in_parent_chain(&self, type_name: &str, member: &str) -> Option<SemanticType> {
+        let mut current = self
+            .type_shapes
+            .get(type_name)
+            .and_then(|shape| shape.parent.clone());
+        let mut visited = HashSet::new();
+
+        while let Some(name) = current {
+            if !visited.insert(name.clone()) {
+                break;
+            }
+
+            let shape = self.type_shapes.get(&name)?;
+            if let Some(field_ty) = shape.fields.get(member) {
+                return Some(field_ty.clone());
+            }
+            if let Some(method_ty) = shape.methods.get(member) {
+                return Some(method_ty.clone());
+            }
+
+            current = shape.parent.clone();
+        }
+
+        None
+    }
+
+    fn validate_method_override(&mut self, typ: &TypeDecl, method: &FunctionDecl) {
+        let child_signature = SemanticType::Function(
+            method
+                .params
+                .iter()
+                .map(|p| self.resolve_type_ref_silent(p.types.as_ref()))
+                .collect::<Vec<_>>(),
+            Box::new(
+                method
+                    .return_type
+                    .as_ref()
+                    .map(SemanticType::from_type_ref)
+                    .unwrap_or(SemanticType::Unknown),
+            ),
+        );
+
+        if let Some(parent_signature) = self.lookup_member_type_in_parent_chain(&typ.name, &method.name) {
+            let parent_is_method = matches!(parent_signature, SemanticType::Function(_, _));
+            if !parent_is_method {
+                self.diagnostics.error(
+                    format!(
+                        "El metodo {} en {} colisiona con un campo heredado",
+                        method.name, typ.name
+                    ),
+                    method.body.span,
+                );
+                return;
+            }
+
+            if !self.is_compatible_type(&parent_signature, &child_signature) {
+                self.diagnostics.error(
+                    format!(
+                        "Override incompatible en {}.{}: firma hija {} no es compatible con firma padre {}",
+                        typ.name, method.name, child_signature, parent_signature
+                    ),
+                    method.body.span,
+                );
+            }
+        }
     }
 
     fn lookup_protocol_member_type(&self, protocol_name: &str, member: &str) -> Option<SemanticType> {
