@@ -34,6 +34,7 @@ pub struct SemanticAnalyzer {
     symbols: SymbolTable,
     diagnostics: DiagnosticCollector,
     inferred_types: HashMap<NodeId, SemanticType>,
+    assigned_scopes: Vec<HashMap<String, bool>>,
     current_return_type: Option<SemanticType>,
     type_parents: HashMap<String, ParentLink>,
     protocol_parents: HashMap<String, ParentLink>,
@@ -42,11 +43,14 @@ pub struct SemanticAnalyzer {
 }
 
 impl SemanticAnalyzer {
+    const LOOP_FIXPOINT_MAX_ITERS: usize = 3;
+
     pub fn new() -> Self {
         let mut analyzer = Self {
             symbols: SymbolTable::new(),
             diagnostics: DiagnosticCollector::new(),
             inferred_types: HashMap::new(),
+            assigned_scopes: vec![HashMap::new()],
             current_return_type: None,
             type_parents: HashMap::new(),
             protocol_parents: HashMap::new(),
@@ -216,7 +220,7 @@ impl SemanticAnalyzer {
     }
 
     fn check_function_decl(&mut self, func: &FunctionDecl) {
-        self.symbols.enter_scope();
+        self.enter_scope();
         for param in &func.params {
             let typ = self.resolve_type_ref(param.types.as_ref(), func.body.span);
             self.define_local(&param.name, SymbolKind::Variable, typ, func.body.span);
@@ -226,20 +230,28 @@ impl SemanticAnalyzer {
         self.current_return_type = func.return_type.as_ref().map(SemanticType::from_type_ref);
 
         let body_ty = self.check_expr(&func.body);
-        if let Some(expected) = &self.current_return_type
-            && !self.is_compatible_type(expected, &body_ty)
-        {
-            self.diagnostics.error(
-                format!(
-                    "La funcion {} retorna {}, se esperaba {}",
-                    func.name, body_ty, expected
-                ),
-                func.body.span,
-            );
+        if let Some(expected) = &self.current_return_type {
+            if !self.guarantees_value(&func.body) {
+                self.diagnostics.error(
+                    format!(
+                        "La funcion {} con retorno {} no garantiza valor en todos los caminos",
+                        func.name, expected
+                    ),
+                    func.body.span,
+                );
+            } else if !self.is_compatible_type(expected, &body_ty) {
+                self.diagnostics.error(
+                    format!(
+                        "La funcion {} retorna {}, se esperaba {}",
+                        func.name, body_ty, expected
+                    ),
+                    func.body.span,
+                );
+            }
         }
 
         self.current_return_type = prev_return;
-        self.symbols.exit_scope();
+        self.exit_scope();
     }
 
     fn check_type_decl(&mut self, typ: &TypeDecl) {
@@ -255,7 +267,7 @@ impl SemanticAnalyzer {
             }
         }
 
-        self.symbols.enter_scope();
+        self.enter_scope();
         let mut field_names = HashSet::new();
         let mut method_names = HashSet::new();
 
@@ -277,6 +289,16 @@ impl SemanticAnalyzer {
                 );
             }
 
+            if !self.guarantees_value(&field.initializer) {
+                self.diagnostics.error(
+                    format!(
+                        "El inicializador del campo {} en {} no garantiza valor",
+                        field.name, typ.name
+                    ),
+                    field.initializer.span,
+                );
+            }
+
             let init_ty = self.check_expr(&field.initializer);
             let declared = self.resolve_type_ref(field.type_annotation.as_ref(), field.initializer.span);
             if !self.is_compatible_type(&declared, &init_ty) {
@@ -288,11 +310,12 @@ impl SemanticAnalyzer {
                     field.initializer.span,
                 );
             }
-            self.define_local(
+            self.define_local_with_state(
                 &field.name,
                 SymbolKind::Variable,
                 declared,
                 field.initializer.span,
+                self.guarantees_value(&field.initializer),
             );
         }
 
@@ -308,7 +331,7 @@ impl SemanticAnalyzer {
             self.check_function_decl(method);
         }
 
-        self.symbols.exit_scope();
+        self.exit_scope();
     }
 
     fn check_protocol_decl(&mut self, proto: &ProtocolDecl) {
@@ -368,13 +391,13 @@ impl SemanticAnalyzer {
     }
 
     fn check_macro_decl(&mut self, macr: &MacroDecl) {
-        self.symbols.enter_scope();
+        self.enter_scope();
         for param in &macr.params {
             let typ = self.resolve_type_ref(param.type_info.as_ref(), macr.body.span);
             self.define_local(&param.name, SymbolKind::Variable, typ, macr.body.span);
         }
         self.check_expr(&macr.body);
-        self.symbols.exit_scope();
+        self.exit_scope();
     }
 
     fn check_expr(&mut self, expr: &Expr) -> SemanticType {
@@ -386,7 +409,15 @@ impl SemanticAnalyzer {
             },
             KindExpr::Variable(var) => {
                 if let Some(symbol) = self.symbols.lookup(&var.name) {
-                    symbol.typ.clone()
+                    let symbol_kind = symbol.kind;
+                    let symbol_type = symbol.typ.clone();
+                    if symbol_kind == SymbolKind::Variable && !self.is_definitely_assigned(&var.name) {
+                        self.diagnostics.error(
+                            format!("La variable {} puede no estar inicializada", var.name),
+                            expr.span,
+                        );
+                    }
+                    symbol_type
                 } else {
                     self.diagnostics.error(
                         format!("Identificador no definido: {}", var.name),
@@ -470,8 +501,19 @@ impl SemanticAnalyzer {
                 SemanticType::Unknown
             }
             KindExpr::Let(let_expr) => {
-                self.symbols.enter_scope();
+                self.enter_scope();
                 for binding in &let_expr.bindings {
+                    let initializer_guaranteed = self.guarantees_value(&binding.initializer);
+                    if !initializer_guaranteed {
+                        self.diagnostics.error(
+                            format!(
+                                "El inicializador de {} no garantiza valor en todos los caminos",
+                                binding.name
+                            ),
+                            binding.initializer.span,
+                        );
+                    }
+
                     let init_ty = self.check_expr(&binding.initializer);
                     let declared =
                         self.resolve_type_ref(binding.types.as_ref(), binding.initializer.span);
@@ -489,65 +531,116 @@ impl SemanticAnalyzer {
                     } else {
                         declared
                     };
-                    self.define_local(
+                    self.define_local_with_state(
                         &binding.name,
                         SymbolKind::Variable,
                         stored,
                         binding.initializer.span,
+                        initializer_guaranteed,
                     );
                 }
                 let body_ty = self.check_expr(&let_expr.body);
-                self.symbols.exit_scope();
+                self.exit_scope();
                 body_ty
             }
             KindExpr::Block(block) => {
-                self.symbols.enter_scope();
+                self.enter_scope();
                 let mut last = SemanticType::Unknown;
                 for sub in &block.expressions {
                     last = self.check_expr(sub);
                 }
-                self.symbols.exit_scope();
+                self.exit_scope();
                 last
             }
             KindExpr::If(if_expr) => {
+                let state_before_if = self.assigned_scopes.clone();
+                self.assigned_scopes = state_before_if.clone();
                 let cond_ty = self.check_expr(&if_expr.condition);
                 self.expect_type(expr.span, &cond_ty, &SemanticType::Boolean, "condicion de if");
+                self.assigned_scopes = state_before_if.clone();
 
                 let then_ty = if let Some((name, narrowed_type)) =
                     self.extract_is_narrowing(&if_expr.condition, expr.span)
                 {
-                    self.symbols.enter_scope();
+                    self.enter_scope();
                     self.define_local(&name, SymbolKind::Variable, narrowed_type, expr.span);
                     let ty = self.check_expr(&if_expr.then_branch);
-                    self.symbols.exit_scope();
+                    self.exit_scope();
                     ty
                 } else {
                     self.check_expr(&if_expr.then_branch)
                 };
+
+                let then_state = self.assigned_scopes.clone();
+                let mut branch_states = vec![then_state];
+
+                let mut elif_types = Vec::new();
                 for (elif_cond, elif_body) in &if_expr.elif_branches {
+                    self.assigned_scopes = state_before_if.clone();
                     let elif_cond_ty = self.check_expr(elif_cond);
                     self.expect_type(expr.span, &elif_cond_ty, &SemanticType::Boolean, "condicion de elif");
-                    let _ = self.check_expr(elif_body);
+                    self.assigned_scopes = state_before_if.clone();
+                    elif_types.push(self.check_expr(elif_body));
+                    branch_states.push(self.assigned_scopes.clone());
                 }
 
+                self.assigned_scopes = state_before_if.clone();
                 let else_ty = self.check_expr(&if_expr.else_branch);
-                if self.is_compatible_type(&then_ty, &else_ty) {
-                    then_ty
-                } else if self.is_compatible_type(&else_ty, &then_ty) {
+                branch_states.push(self.assigned_scopes.clone());
+                self.assigned_scopes = self.merge_definite_assignment_states(&state_before_if, &branch_states);
+
+                let mut combined_ty = then_ty;
+                for elif_ty in elif_types {
+                    if self.is_compatible_type(&combined_ty, &elif_ty) {
+                        continue;
+                    }
+                    if self.is_compatible_type(&elif_ty, &combined_ty) {
+                        combined_ty = elif_ty;
+                        continue;
+                    }
+                    combined_ty = SemanticType::Unknown;
+                    break;
+                }
+                if self.is_compatible_type(&combined_ty, &else_ty) {
+                    combined_ty
+                } else if self.is_compatible_type(&else_ty, &combined_ty) {
                     else_ty
                 } else {
                     SemanticType::Unknown
                 }
             }
             KindExpr::While(while_expr) => {
+                let min_iterations = self.while_min_iterations(&while_expr.condition);
                 let cond_ty = self.check_expr(&while_expr.condition);
                 self.expect_type(expr.span, &cond_ty, &SemanticType::Boolean, "condicion de while");
-                self.check_expr(&while_expr.body);
+                let state_after_condition_eval = self.assigned_scopes.clone();
+
+                let mut loop_state = state_after_condition_eval.clone();
+                for _ in 0..Self::LOOP_FIXPOINT_MAX_ITERS {
+                    self.assigned_scopes = loop_state.clone();
+                    self.check_expr(&while_expr.body);
+                    let next_state = self.assigned_scopes.clone();
+                    if next_state == loop_state {
+                        break;
+                    }
+                    loop_state = next_state;
+                }
+
+                self.assigned_scopes = match min_iterations {
+                    Some(0) => state_after_condition_eval,
+                    Some(_) => loop_state,
+                    None => self.intersect_definite_assignment_states(
+                        &state_after_condition_eval,
+                        &loop_state,
+                    ),
+                };
                 SemanticType::Unknown
             }
             KindExpr::For(for_expr) => {
+                let min_iterations = self.iterable_min_iterations(&for_expr.iterable);
                 let iterable_ty = self.check_expr(&for_expr.iterable);
-                self.symbols.enter_scope();
+                let state_after_iterable_eval = self.assigned_scopes.clone();
+
                 let element_ty = match iterable_ty {
                     SemanticType::Vector(inner) => *inner,
                     other => {
@@ -558,9 +651,31 @@ impl SemanticAnalyzer {
                         SemanticType::Unknown
                     }
                 };
-                self.define_local(&for_expr.variable, SymbolKind::Variable, element_ty, expr.span);
-                self.check_expr(&for_expr.body);
-                self.symbols.exit_scope();
+
+                let mut loop_state = state_after_iterable_eval.clone();
+                for _ in 0..Self::LOOP_FIXPOINT_MAX_ITERS {
+                    self.assigned_scopes = loop_state.clone();
+                    self.enter_scope();
+                    self.define_local(&for_expr.variable, SymbolKind::Variable, element_ty.clone(), expr.span);
+                    self.check_expr(&for_expr.body);
+                    self.exit_scope();
+                    let next_state = self.assigned_scopes.clone();
+                    if next_state == loop_state {
+                        break;
+                    }
+                    loop_state = next_state;
+                }
+
+                self.assigned_scopes = match min_iterations {
+                    Some(0) => state_after_iterable_eval,
+                    Some(_) => loop_state,
+                    None => {
+                        self.intersect_definite_assignment_states(
+                            &state_after_iterable_eval,
+                            &loop_state,
+                        )
+                    }
+                };
                 SemanticType::Unknown
             }
             KindExpr::Assign(assign) => {
@@ -571,8 +686,14 @@ impl SemanticAnalyzer {
                     );
                 }
 
-                let target_ty = self.check_expr(&assign.target);
+                let target_ty = self.check_assignment_target(&assign.target);
                 let value_ty = self.check_expr(&assign.value);
+                if !self.guarantees_value(&assign.value) {
+                    self.diagnostics.error(
+                        "La expresion asignada no garantiza valor",
+                        assign.value.span,
+                    );
+                }
                 if !self.is_compatible_type(&target_ty, &value_ty) {
                     self.diagnostics.error(
                         format!(
@@ -581,6 +702,10 @@ impl SemanticAnalyzer {
                         ),
                         expr.span,
                     );
+                }
+
+                if let KindExpr::Variable(var) = &assign.target.kind {
+                    self.mark_assigned(&var.name);
                 }
                 target_ty
             }
@@ -621,18 +746,18 @@ impl SemanticAnalyzer {
             }
             KindExpr::ArrayComprehension(comp) => {
                 let iter_ty = self.check_expr(&comp.iterable);
-                self.symbols.enter_scope();
+                self.enter_scope();
                 let loop_ty = match iter_ty {
                     SemanticType::Vector(inner) => *inner,
                     _ => SemanticType::Unknown,
                 };
                 self.define_local(&comp.variable, SymbolKind::Variable, loop_ty, expr.span);
                 let elem_ty = self.check_expr(&comp.element);
-                self.symbols.exit_scope();
+                self.exit_scope();
                 SemanticType::Vector(Box::new(elem_ty))
             }
             KindExpr::Lambda(lambda) => {
-                self.symbols.enter_scope();
+                self.enter_scope();
                 let mut params = Vec::new();
                 for param in &lambda.params {
                     let param_ty = self.resolve_type_ref(param.types.as_ref(), expr.span);
@@ -640,12 +765,25 @@ impl SemanticAnalyzer {
                     params.push(param_ty);
                 }
                 let body_ty = self.check_expr(&lambda.body);
-                self.symbols.exit_scope();
+                self.exit_scope();
                 let ret = lambda
                     .return_type
                     .as_ref()
                     .map(SemanticType::from_type_ref)
                     .unwrap_or(body_ty);
+
+                if let Some(expected_ret) = lambda.return_type.as_ref().map(SemanticType::from_type_ref)
+                {
+                    if !self.guarantees_value(&lambda.body) {
+                        self.diagnostics.error(
+                            format!(
+                                "Lambda con retorno {} no garantiza valor en todos los caminos",
+                                expected_ret
+                            ),
+                            expr.span,
+                        );
+                    }
+                }
                 SemanticType::Function(params, Box::new(ret))
             }
             KindExpr::New(new_expr) => {
@@ -735,6 +873,11 @@ impl SemanticAnalyzer {
             }
             KindExpr::Match(match_expr) => {
                 let scrutinee_ty = self.check_expr(&match_expr.expression);
+                let state_before_cases = self.assigned_scopes.clone();
+                let known_scrutinee_literal = match &match_expr.expression.kind {
+                    KindExpr::Literal(lit) => Some(&lit.value),
+                    _ => None,
+                };
                 let scrutinee_name = match &match_expr.expression.kind {
                     KindExpr::Variable(var) => Some(var.name.as_str()),
                     _ => None,
@@ -743,19 +886,41 @@ impl SemanticAnalyzer {
                 let mut saw_true_case = false;
                 let mut saw_false_case = false;
                 let mut saw_default_case = false;
+                let mut saw_catch_all_pattern = false;
+                let mut saw_forced_match_case = false;
+                let mut seen_literal_patterns = HashSet::new();
+                let mut seen_type_coverages: Vec<SemanticType> = Vec::new();
+                let mut case_states = Vec::new();
 
                 for case in &match_expr.cases {
-                    if saw_default_case {
+                    let current_pattern_ty = self.pattern_coverage_type(&case.pattern, expr.span);
+                    let shadowed_by_previous_type = current_pattern_ty.as_ref().is_some_and(|current| {
+                        seen_type_coverages
+                            .iter()
+                            .any(|previous| self.is_compatible_type(previous, current))
+                    });
+                    let known_literal_match = known_scrutinee_literal
+                        .and_then(|literal| self.pattern_matches_known_literal(&case.pattern, literal, expr.span));
+                    let impossible_for_known_literal = matches!(known_literal_match, Some(false));
+
+                    if saw_default_case
+                        || saw_catch_all_pattern
+                        || saw_forced_match_case
+                        || shadowed_by_previous_type
+                        || impossible_for_known_literal
+                    {
                         self.diagnostics.error(
-                            "Caso inalcanzable: hay un default previo en match",
+                            "Caso inalcanzable: hay un case previo que ya cubre este patron",
                             expr.span,
                         );
                     }
 
-                    self.symbols.enter_scope();
+                    self.assigned_scopes = state_before_cases.clone();
+                    self.enter_scope();
                     self.check_pattern(&case.pattern, &scrutinee_ty, scrutinee_name, expr.span);
                     let case_ty = self.check_expr(&case.body);
-                    self.symbols.exit_scope();
+                    self.exit_scope();
+                    case_states.push(self.assigned_scopes.clone());
 
                     match &case.pattern {
                         Pattern::Literal(LiteralValue::Bool(true)) => {
@@ -776,6 +941,21 @@ impl SemanticAnalyzer {
                             }
                             saw_false_case = true;
                         }
+                        Pattern::Identifier {
+                            type_restriction: None,
+                            ..
+                        } => {
+                            saw_catch_all_pattern = true;
+                        }
+                        Pattern::Literal(lit) => {
+                            let key = Self::literal_pattern_key(lit);
+                            if !seen_literal_patterns.insert(key.clone()) {
+                                self.diagnostics.error(
+                                    format!("Patron duplicado en match: case {} repetido", key),
+                                    expr.span,
+                                );
+                            }
+                        }
                         Pattern::Default => {
                             if saw_default_case {
                                 self.diagnostics.error(
@@ -786,6 +966,17 @@ impl SemanticAnalyzer {
                             saw_default_case = true;
                         }
                         _ => {}
+                    }
+
+                    if let Some(coverage_ty) = current_pattern_ty {
+                        if self.is_compatible_type(&coverage_ty, &scrutinee_ty) {
+                            saw_catch_all_pattern = true;
+                        }
+                        seen_type_coverages.push(coverage_ty);
+                    }
+
+                    if matches!(known_literal_match, Some(true)) {
+                        saw_forced_match_case = true;
                     }
 
                     if matches!(merged, SemanticType::Unknown) {
@@ -799,12 +990,33 @@ impl SemanticAnalyzer {
 
                 if matches!(scrutinee_ty, SemanticType::Boolean)
                     && !saw_default_case
+                    && !saw_forced_match_case
                     && !(saw_true_case && saw_false_case)
                 {
                     self.diagnostics.error(
                         "Match sobre Boolean no exhaustivo: faltan casos true/false o default",
                         expr.span,
                     );
+                }
+
+                if !matches!(scrutinee_ty, SemanticType::Boolean | SemanticType::Unknown)
+                    && !saw_default_case
+                    && !saw_forced_match_case
+                {
+                    self.diagnostics.error(
+                        format!("Match no exhaustivo para {}: falta default", scrutinee_ty),
+                        expr.span,
+                    );
+                }
+
+                let exhaustive = saw_default_case
+                    || saw_forced_match_case
+                    || (matches!(scrutinee_ty, SemanticType::Boolean) && saw_true_case && saw_false_case);
+                if exhaustive && !case_states.is_empty() {
+                    self.assigned_scopes =
+                        self.merge_definite_assignment_states(&state_before_cases, &case_states);
+                } else {
+                    self.assigned_scopes = state_before_cases;
                 }
 
                 merged
@@ -903,11 +1115,94 @@ impl SemanticAnalyzer {
         }
     }
 
+    fn guarantees_value(&self, expr: &Expr) -> bool {
+        match &expr.kind {
+            KindExpr::While(_) | KindExpr::For(_) => false,
+            KindExpr::Block(block) => block
+                .expressions
+                .last()
+                .map(|last| self.guarantees_value(last))
+                .unwrap_or(false),
+            KindExpr::If(if_expr) => {
+                self.guarantees_value(&if_expr.then_branch)
+                    && if_expr
+                        .elif_branches
+                        .iter()
+                        .all(|(_, body)| self.guarantees_value(body))
+                    && self.guarantees_value(&if_expr.else_branch)
+            }
+            KindExpr::Let(let_expr) => self.guarantees_value(&let_expr.body),
+            KindExpr::Match(match_expr) => {
+                !match_expr.cases.is_empty()
+                    && match_expr
+                        .cases
+                        .iter()
+                        .all(|case| self.guarantees_value(&case.body))
+            }
+            _ => true,
+        }
+    }
+
     fn literal_type(&self, literal: &LiteralValue) -> SemanticType {
         match literal {
             LiteralValue::Number(_) => SemanticType::Number,
             LiteralValue::String(_) => SemanticType::String,
             LiteralValue::Bool(_) => SemanticType::Boolean,
+        }
+    }
+
+    fn literal_pattern_key(literal: &LiteralValue) -> String {
+        match literal {
+            LiteralValue::Number(n) => n.to_string(),
+            LiteralValue::String(s) => format!("\"{}\"", s),
+            LiteralValue::Bool(b) => b.to_string(),
+        }
+    }
+
+    fn literal_values_equal(&self, left: &LiteralValue, right: &LiteralValue) -> bool {
+        match (left, right) {
+            (LiteralValue::Number(a), LiteralValue::Number(b)) => a.to_bits() == b.to_bits(),
+            (LiteralValue::String(a), LiteralValue::String(b)) => a == b,
+            (LiteralValue::Bool(a), LiteralValue::Bool(b)) => a == b,
+            _ => false,
+        }
+    }
+
+    fn pattern_matches_known_literal(
+        &mut self,
+        pattern: &Pattern,
+        literal: &LiteralValue,
+        span: Span,
+    ) -> Option<bool> {
+        match pattern {
+            Pattern::Literal(pattern_lit) => Some(self.literal_values_equal(pattern_lit, literal)),
+            Pattern::Default => Some(true),
+            Pattern::Identifier {
+                type_restriction: None,
+                ..
+            } => Some(true),
+            Pattern::Identifier {
+                type_restriction: Some(type_ref),
+                ..
+            } => {
+                let restricted_ty = self.resolve_type_ref(Some(type_ref), span);
+                let literal_ty = self.literal_type(literal);
+                Some(
+                    self.is_compatible_type(&restricted_ty, &literal_ty)
+                        || self.is_compatible_type(&literal_ty, &restricted_ty),
+                )
+            }
+            _ => None,
+        }
+    }
+
+    fn pattern_coverage_type(&mut self, pattern: &Pattern, span: Span) -> Option<SemanticType> {
+        match pattern {
+            Pattern::Identifier {
+                type_restriction: Some(type_ref),
+                ..
+            } => Some(self.resolve_type_ref(Some(type_ref), span)),
+            _ => None,
         }
     }
 
@@ -1216,6 +1511,20 @@ impl SemanticAnalyzer {
         SemanticType::Unknown
     }
 
+    fn check_assignment_target(&mut self, target: &Expr) -> SemanticType {
+        if let KindExpr::Variable(var) = &target.kind {
+            if let Some(symbol) = self.symbols.lookup(&var.name) {
+                return symbol.typ.clone();
+            }
+
+            self.diagnostics
+                .error(format!("Identificador no definido: {}", var.name), target.span);
+            return SemanticType::Unknown;
+        }
+
+        self.check_expr(target)
+    }
+
     fn lookup_member_type(&self, type_name: &str, member: &str) -> Option<SemanticType> {
         if let Some(signature) = self.lookup_protocol_member_type(type_name, member) {
             return Some(signature);
@@ -1470,6 +1779,231 @@ impl SemanticAnalyzer {
         Span { start: 0, end: 0 }
     }
 
+    fn enter_scope(&mut self) {
+        self.symbols.enter_scope();
+        self.assigned_scopes.push(HashMap::new());
+    }
+
+    fn exit_scope(&mut self) {
+        self.symbols.exit_scope();
+        if self.assigned_scopes.len() > 1 {
+            self.assigned_scopes.pop();
+        }
+    }
+
+    fn is_definitely_assigned(&self, name: &str) -> bool {
+        self.assigned_scopes
+            .iter()
+            .rev()
+            .find_map(|scope| scope.get(name).copied())
+            .unwrap_or(true)
+    }
+
+    fn mark_assigned(&mut self, name: &str) {
+        for scope in self.assigned_scopes.iter_mut().rev() {
+            if let Some(state) = scope.get_mut(name) {
+                *state = true;
+                return;
+            }
+        }
+    }
+
+    fn merge_definite_assignment_states(
+        &self,
+        before: &[HashMap<String, bool>],
+        branch_states: &[Vec<HashMap<String, bool>>],
+    ) -> Vec<HashMap<String, bool>> {
+        let mut merged = before.to_vec();
+
+        for (scope_idx, merged_scope) in merged.iter_mut().enumerate() {
+            let keys = merged_scope.keys().cloned().collect::<Vec<_>>();
+            for name in keys {
+                let before_val = before
+                    .get(scope_idx)
+                    .and_then(|scope| scope.get(&name))
+                    .copied()
+                    .unwrap_or(false);
+                let assigned_in_all_branches = branch_states.iter().all(|state| {
+                    state
+                        .get(scope_idx)
+                        .and_then(|scope| scope.get(&name))
+                        .copied()
+                        .unwrap_or(false)
+                });
+                merged_scope.insert(name, before_val || assigned_in_all_branches);
+            }
+        }
+
+        merged
+    }
+
+    fn intersect_definite_assignment_states(
+        &self,
+        left: &[HashMap<String, bool>],
+        right: &[HashMap<String, bool>],
+    ) -> Vec<HashMap<String, bool>> {
+        let mut merged = left.to_vec();
+
+        for (scope_idx, merged_scope) in merged.iter_mut().enumerate() {
+            let keys = merged_scope.keys().cloned().collect::<Vec<_>>();
+            for name in keys {
+                let left_val = left
+                    .get(scope_idx)
+                    .and_then(|scope| scope.get(&name))
+                    .copied()
+                    .unwrap_or(false);
+                let right_val = right
+                    .get(scope_idx)
+                    .and_then(|scope| scope.get(&name))
+                    .copied()
+                    .unwrap_or(false);
+                merged_scope.insert(name, left_val && right_val);
+            }
+        }
+
+        merged
+    }
+
+    fn iterable_min_iterations(&self, iterable: &Expr) -> Option<usize> {
+        match &iterable.kind {
+            KindExpr::Array(array) => Some(if array.elements.is_empty() { 0 } else { 1 }),
+            KindExpr::Call(call) => {
+                let KindExpr::Variable(var) = &call.callee.kind else {
+                    return None;
+                };
+
+                if var.name != "range" || call.arguments.len() != 2 {
+                    return None;
+                }
+
+                let start = self.eval_const_number(&call.arguments[0])?;
+                let end = self.eval_const_number(&call.arguments[1])?;
+                Some(if end > start { 1 } else { 0 })
+            }
+            _ => None,
+        }
+    }
+
+    fn while_min_iterations(&self, condition: &Expr) -> Option<usize> {
+        self.eval_const_bool(condition)
+            .map(|cond| if cond { 1 } else { 0 })
+    }
+
+    fn eval_const_number(&self, expr: &Expr) -> Option<f64> {
+        match &expr.kind {
+            KindExpr::Literal(lit) => match lit.value {
+                LiteralValue::Number(n) => Some(n),
+                _ => None,
+            },
+            KindExpr::Unary(unary) => {
+                if matches!(unary.operator, UnaryOperator::Negate) {
+                    self.eval_const_number(&unary.right).map(|value| -value)
+                } else {
+                    None
+                }
+            }
+            KindExpr::Binary(bin) => {
+                let left = self.eval_const_number(&bin.left)?;
+                let right = self.eval_const_number(&bin.right)?;
+
+                match bin.operator {
+                    BinaryOperator::Add => Some(left + right),
+                    BinaryOperator::Sub => Some(left - right),
+                    BinaryOperator::Mul => Some(left * right),
+                    BinaryOperator::Div => Some(left / right),
+                    BinaryOperator::Pow => Some(left.powf(right)),
+                    BinaryOperator::Mod => Some(left % right),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn eval_const_literal(&self, expr: &Expr) -> Option<LiteralValue> {
+        let KindExpr::Literal(lit) = &expr.kind else {
+            return None;
+        };
+
+        match &lit.value {
+            LiteralValue::Number(n) => Some(LiteralValue::Number(*n)),
+            LiteralValue::String(s) => Some(LiteralValue::String(s.clone())),
+            LiteralValue::Bool(b) => Some(LiteralValue::Bool(*b)),
+        }
+    }
+
+    fn eval_const_bool(&self, expr: &Expr) -> Option<bool> {
+        match &expr.kind {
+            KindExpr::Literal(lit) => match lit.value {
+                LiteralValue::Bool(b) => Some(b),
+                _ => None,
+            },
+            KindExpr::Unary(unary) => {
+                if matches!(unary.operator, UnaryOperator::Not) {
+                    self.eval_const_bool(&unary.right).map(|value| !value)
+                } else {
+                    None
+                }
+            }
+            KindExpr::Binary(bin) => match bin.operator {
+                BinaryOperator::And => Some(
+                    self.eval_const_bool(&bin.left)? && self.eval_const_bool(&bin.right)?,
+                ),
+                BinaryOperator::Or => {
+                    Some(self.eval_const_bool(&bin.left)? || self.eval_const_bool(&bin.right)?)
+                }
+                BinaryOperator::Equal => {
+                    if let (Some(left), Some(right)) = (
+                        self.eval_const_number(&bin.left),
+                        self.eval_const_number(&bin.right),
+                    ) {
+                        Some(left.to_bits() == right.to_bits())
+                    } else if let (Some(left), Some(right)) = (
+                        self.eval_const_bool(&bin.left),
+                        self.eval_const_bool(&bin.right),
+                    ) {
+                        Some(left == right)
+                    } else {
+                        let left = self.eval_const_literal(&bin.left)?;
+                        let right = self.eval_const_literal(&bin.right)?;
+                        Some(self.literal_values_equal(&left, &right))
+                    }
+                }
+                BinaryOperator::NotEqual => {
+                    if let (Some(left), Some(right)) = (
+                        self.eval_const_number(&bin.left),
+                        self.eval_const_number(&bin.right),
+                    ) {
+                        Some(left.to_bits() != right.to_bits())
+                    } else if let (Some(left), Some(right)) = (
+                        self.eval_const_bool(&bin.left),
+                        self.eval_const_bool(&bin.right),
+                    ) {
+                        Some(left != right)
+                    } else {
+                        let left = self.eval_const_literal(&bin.left)?;
+                        let right = self.eval_const_literal(&bin.right)?;
+                        Some(!self.literal_values_equal(&left, &right))
+                    }
+                }
+                BinaryOperator::Less => {
+                    Some(self.eval_const_number(&bin.left)? < self.eval_const_number(&bin.right)?)
+                }
+                BinaryOperator::Greater => {
+                    Some(self.eval_const_number(&bin.left)? > self.eval_const_number(&bin.right)?)
+                }
+                BinaryOperator::LessEqual => {
+                    Some(self.eval_const_number(&bin.left)? <= self.eval_const_number(&bin.right)?)
+                }
+                BinaryOperator::GreaterEqual => {
+                    Some(self.eval_const_number(&bin.left)? >= self.eval_const_number(&bin.right)?)
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     fn define_symbol(&mut self, name: &str, kind: SymbolKind, typ: SemanticType) {
         let symbol = Symbol {
             name: name.to_string(),
@@ -1486,6 +2020,17 @@ impl SemanticAnalyzer {
     }
 
     fn define_local(&mut self, name: &str, kind: SymbolKind, typ: SemanticType, span: Span) {
+        self.define_local_with_state(name, kind, typ, span, true);
+    }
+
+    fn define_local_with_state(
+        &mut self,
+        name: &str,
+        kind: SymbolKind,
+        typ: SemanticType,
+        span: Span,
+        is_assigned: bool,
+    ) {
         let symbol = Symbol {
             name: name.to_string(),
             kind,
@@ -1497,6 +2042,13 @@ impl SemanticAnalyzer {
                 format!("Redefinicion de simbolo local: {}", name),
                 span,
             );
+            return;
+        }
+
+        if kind == SymbolKind::Variable
+            && let Some(current_scope) = self.assigned_scopes.last_mut()
+        {
+            current_scope.insert(name.to_string(), is_assigned);
         }
     }
 }

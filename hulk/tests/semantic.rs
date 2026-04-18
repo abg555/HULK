@@ -278,6 +278,107 @@ match true {
 }
 
 #[test]
+fn rejects_non_boolean_match_without_default() {
+        let input = r#"
+let x: Number = 42 in match x {
+    case 42 => 1;
+}
+"#;
+
+        let diagnostics = analyze_program(input).expect_err("expected non-boolean non-exhaustive match error");
+        assert!(diagnostics
+                .iter()
+                .any(|d| d.message.contains("Match no exhaustivo") && d.message.contains("falta default")));
+}
+
+#[test]
+fn rejects_duplicate_string_case_pattern() {
+        let input = r#"
+match "a" {
+    case "a" => 1;
+    case "a" => 2;
+    default => 0;
+}
+"#;
+
+        let diagnostics = analyze_program(input).expect_err("expected duplicate string pattern error");
+        assert!(diagnostics
+                .iter()
+                .any(|d| d.message.contains("Patron duplicado en match")));
+}
+
+#[test]
+fn rejects_unreachable_typed_case_shadowed_by_parent_type() {
+        let input = r#"
+type Animal {}
+
+type Dog inherits Animal {
+    bark(): String => "woof";
+}
+
+let a: Animal = new Dog() in match a {
+    case x: Animal => 1;
+    case d: Dog => 2;
+    default => 0;
+}
+"#;
+
+        let diagnostics = analyze_program(input).expect_err("expected unreachable typed case error");
+        assert!(diagnostics
+                .iter()
+                .any(|d| d.message.contains("Caso inalcanzable") && d.message.contains("cubre")));
+}
+
+#[test]
+fn accepts_typed_case_before_parent_type_case() {
+        let input = r#"
+type Animal {}
+
+type Dog inherits Animal {
+    bark(): String => "woof";
+}
+
+let a: Animal = new Dog() in match a {
+    case d: Dog => 2;
+    case x: Animal => 1;
+    default => 0;
+}
+"#;
+
+        let diagnostics = analyze_program(input).expect_err("expected default-unreachable only");
+        assert!(!diagnostics
+                .iter()
+                .any(|d| d.message.contains("Caso inalcanzable") && d.message.contains("Dog")));
+}
+
+    #[test]
+    fn rejects_unreachable_literal_case_for_known_scrutinee() {
+        let input = r#"
+    match 42 {
+      case 1 => 0;
+      case 42 => 1;
+    }
+    "#;
+
+        let diagnostics = analyze_program(input).expect_err("expected unreachable literal case");
+        assert!(diagnostics
+            .iter()
+            .any(|d| d.message.contains("Caso inalcanzable")));
+    }
+
+    #[test]
+    fn accepts_constant_match_without_default_when_one_case_always_matches() {
+        let input = r#"
+    match 42 {
+      case 42 => 1;
+    }
+    "#;
+
+        let result = analyze_program(input);
+        assert!(result.is_ok(), "expected constant match to be exhaustive without default, got: {result:?}");
+    }
+
+#[test]
 fn accepts_compatible_method_override() {
         let input = r#"
 type Animal {
@@ -341,4 +442,346 @@ let x: Number = 42 in x as String
         assert!(diagnostics
             .iter()
             .any(|d| d.message.contains("Cast 'as' incompatible")));
+}
+
+    #[test]
+    fn rejects_typed_function_without_guaranteed_return_value() {
+        let input = r#"
+    function f(): Number => while (true) 1;
+    f()
+    "#;
+
+        let diagnostics = analyze_program(input).expect_err("expected missing guaranteed return value");
+        assert!(diagnostics
+            .iter()
+            .any(|d| d.message.contains("no garantiza valor en todos los caminos")));
+    }
+
+    #[test]
+    fn accepts_typed_function_with_guaranteed_if_branches() {
+        let input = r#"
+    function f(x: Boolean): Number => if (x) 1 else 2;
+    f(true)
+    "#;
+
+        let result = analyze_program(input);
+        assert!(result.is_ok(), "expected guaranteed return value, got: {result:?}");
+    }
+
+    #[test]
+    fn rejects_let_initializer_without_guaranteed_value() {
+        let input = r#"
+    let x: Number = while (true) 1 in x
+    "#;
+
+        let diagnostics = analyze_program(input).expect_err("expected invalid let initializer");
+        assert!(diagnostics
+            .iter()
+            .any(|d| d.message.contains("inicializador de x no garantiza valor")));
+    }
+
+    #[test]
+    fn rejects_field_initializer_without_guaranteed_value() {
+        let input = r#"
+    type A {
+      n: Number = while (true) 1;
+    }
+    new A()
+    "#;
+
+        let diagnostics = analyze_program(input).expect_err("expected invalid field initializer");
+        assert!(diagnostics
+            .iter()
+            .any(|d| d.message.contains("inicializador del campo n")));
+    }
+
+    #[test]
+    fn rejects_assignment_rhs_without_guaranteed_value() {
+        let input = r#"
+    let x: Number = 0 in {
+      x := while (true) 1;
+      x
+    }
+    "#;
+
+        let diagnostics = analyze_program(input).expect_err("expected invalid assignment rhs");
+        assert!(diagnostics
+            .iter()
+            .any(|d| d.message.contains("expresion asignada no garantiza valor")));
+    }
+
+#[test]
+fn reports_variable_maybe_uninitialized_after_partial_if_assignment() {
+    let input = r#"
+let x: Number = while (true) 1 in {
+  if (true) x := 1 else 0;
+  x
+}
+"#;
+
+    let diagnostics = analyze_program(input).expect_err("expected maybe-uninitialized variable error");
+    assert!(diagnostics
+        .iter()
+        .any(|d| d.message.contains("variable x puede no estar inicializada")));
+}
+
+#[test]
+fn accepts_variable_initialized_in_all_if_branches() {
+    let input = r#"
+let x: Number = while (true) 1 in {
+  if (true) x := 1 else x := 2;
+  x
+}
+"#;
+
+    let diagnostics = analyze_program(input).expect_err("expected initializer error only");
+    assert!(diagnostics
+        .iter()
+        .any(|d| d.message.contains("inicializador de x no garantiza valor")));
+    assert!(!diagnostics
+        .iter()
+        .any(|d| d.message.contains("variable x puede no estar inicializada")));
+}
+
+#[test]
+fn reports_variable_maybe_uninitialized_after_while_assignment() {
+    let input = r#"
+let x: Number = while (true) 1 in {
+  while (false) x := 1;
+  x
+}
+"#;
+
+    let diagnostics = analyze_program(input).expect_err("expected maybe-uninitialized variable error");
+    assert!(diagnostics
+        .iter()
+        .any(|d| d.message.contains("variable x puede no estar inicializada")));
+}
+
+#[test]
+fn reports_variable_maybe_uninitialized_after_for_with_unknown_iterable() {
+    let input = r#"
+let x: Number = while (true) 1 in {
+    let ys = [1] in for (i in ys) x := i;
+  x
+}
+"#;
+
+    let diagnostics = analyze_program(input).expect_err("expected maybe-uninitialized variable error");
+    assert!(diagnostics
+        .iter()
+        .any(|d| d.message.contains("variable x puede no estar inicializada")));
+}
+
+#[test]
+fn accepts_variable_initialized_after_non_empty_array_for() {
+    let input = r#"
+let x: Number = while (true) 1 in {
+  for (i in [1]) x := i;
+  x
+}
+"#;
+
+    let diagnostics = analyze_program(input).expect_err("expected initializer error only");
+    assert!(diagnostics
+        .iter()
+        .any(|d| d.message.contains("inicializador de x no garantiza valor")));
+    assert!(!diagnostics
+        .iter()
+        .any(|d| d.message.contains("variable x puede no estar inicializada")));
+}
+
+#[test]
+fn reports_variable_maybe_uninitialized_after_empty_array_for() {
+    let input = r#"
+let x: Number = while (true) 1 in {
+  for (i in []) x := i;
+  x
+}
+"#;
+
+    let diagnostics = analyze_program(input).expect_err("expected maybe-uninitialized variable error");
+    assert!(diagnostics
+        .iter()
+        .any(|d| d.message.contains("variable x puede no estar inicializada")));
+}
+
+#[test]
+fn accepts_variable_initialized_after_while_true_assignment() {
+    let input = r#"
+let x: Number = while (true) 1 in {
+  while (true) x := 1;
+  x
+}
+"#;
+
+    let diagnostics = analyze_program(input).expect_err("expected initializer error only");
+    assert!(diagnostics
+        .iter()
+        .any(|d| d.message.contains("inicializador de x no garantiza valor")));
+    assert!(!diagnostics
+        .iter()
+        .any(|d| d.message.contains("variable x puede no estar inicializada")));
+}
+
+#[test]
+fn reports_variable_maybe_uninitialized_after_while_false_assignment() {
+    let input = r#"
+let x: Number = while (true) 1 in {
+  while (false) x := 1;
+  x
+}
+"#;
+
+    let diagnostics = analyze_program(input).expect_err("expected maybe-uninitialized variable error");
+    assert!(diagnostics
+        .iter()
+        .any(|d| d.message.contains("variable x puede no estar inicializada")));
+}
+
+#[test]
+fn reports_variable_maybe_uninitialized_after_while_with_unknown_condition() {
+    let input = r#"
+let x: Number = while (true) 1 in {
+  while (rand() > 0) x := 1;
+  x
+}
+"#;
+
+    let diagnostics = analyze_program(input).expect_err("expected maybe-uninitialized variable error");
+    assert!(diagnostics
+        .iter()
+        .any(|d| d.message.contains("variable x puede no estar inicializada")));
+}
+
+#[test]
+fn accepts_variable_initialized_after_while_constant_true_condition() {
+    let input = r#"
+let x: Number = while (true) 1 in {
+  while (1 < 2) x := 1;
+  x
+}
+"#;
+
+    let diagnostics = analyze_program(input).expect_err("expected initializer error only");
+    assert!(diagnostics
+        .iter()
+        .any(|d| d.message.contains("inicializador de x no garantiza valor")));
+    assert!(!diagnostics
+        .iter()
+        .any(|d| d.message.contains("variable x puede no estar inicializada")));
+}
+
+#[test]
+fn reports_variable_maybe_uninitialized_after_while_constant_false_condition() {
+    let input = r#"
+let x: Number = while (true) 1 in {
+  while (1 > 2) x := 1;
+  x
+}
+"#;
+
+    let diagnostics = analyze_program(input).expect_err("expected maybe-uninitialized variable error");
+    assert!(diagnostics
+        .iter()
+        .any(|d| d.message.contains("variable x puede no estar inicializada")));
+}
+
+#[test]
+fn accepts_variable_initialized_after_non_empty_constant_range_for() {
+    let input = r#"
+let x: Number = while (true) 1 in {
+  for (i in range(0, 1)) x := i;
+  x
+}
+"#;
+
+    let diagnostics = analyze_program(input).expect_err("expected initializer error only");
+    assert!(diagnostics
+        .iter()
+        .any(|d| d.message.contains("inicializador de x no garantiza valor")));
+    assert!(!diagnostics
+        .iter()
+        .any(|d| d.message.contains("variable x puede no estar inicializada")));
+}
+
+#[test]
+fn reports_variable_maybe_uninitialized_after_empty_constant_range_for() {
+    let input = r#"
+let x: Number = while (true) 1 in {
+  for (i in range(0, 0)) x := i;
+  x
+}
+"#;
+
+    let diagnostics = analyze_program(input).expect_err("expected maybe-uninitialized variable error");
+    assert!(diagnostics
+        .iter()
+        .any(|d| d.message.contains("variable x puede no estar inicializada")));
+}
+
+#[test]
+fn accepts_variable_initialized_after_while_arithmetic_constant_true_condition() {
+    let input = r#"
+let x: Number = while (true) 1 in {
+  while ((1 + 1) == (3 - 1)) x := 1;
+  x
+}
+"#;
+
+    let diagnostics = analyze_program(input).expect_err("expected initializer error only");
+    assert!(diagnostics
+        .iter()
+        .any(|d| d.message.contains("inicializador de x no garantiza valor")));
+    assert!(!diagnostics
+        .iter()
+        .any(|d| d.message.contains("variable x puede no estar inicializada")));
+}
+
+#[test]
+fn reports_variable_maybe_uninitialized_after_while_arithmetic_constant_false_condition() {
+    let input = r#"
+let x: Number = while (true) 1 in {
+  while ((2 * 3) < (5 - 1)) x := 1;
+  x
+}
+"#;
+
+    let diagnostics = analyze_program(input).expect_err("expected maybe-uninitialized variable error");
+    assert!(diagnostics
+        .iter()
+        .any(|d| d.message.contains("variable x puede no estar inicializada")));
+}
+
+#[test]
+fn accepts_variable_initialized_after_non_empty_arithmetic_range_for() {
+    let input = r#"
+let x: Number = while (true) 1 in {
+  for (i in range(1 + 1, 5 - 2)) x := i;
+  x
+}
+"#;
+
+    let diagnostics = analyze_program(input).expect_err("expected initializer error only");
+    assert!(diagnostics
+        .iter()
+        .any(|d| d.message.contains("inicializador de x no garantiza valor")));
+    assert!(!diagnostics
+        .iter()
+        .any(|d| d.message.contains("variable x puede no estar inicializada")));
+}
+
+#[test]
+fn reports_variable_maybe_uninitialized_after_empty_arithmetic_range_for() {
+    let input = r#"
+let x: Number = while (true) 1 in {
+  for (i in range(2 * 2, 1 + 1)) x := i;
+  x
+}
+"#;
+
+    let diagnostics = analyze_program(input).expect_err("expected maybe-uninitialized variable error");
+    assert!(diagnostics
+        .iter()
+        .any(|d| d.message.contains("variable x puede no estar inicializada")));
 }
