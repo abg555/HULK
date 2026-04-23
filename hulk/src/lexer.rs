@@ -324,6 +324,15 @@ pub fn add_lambda_tokens(tokens: Vec<Token>) -> Vec<Token> {
     result
 }
 
+// Paso intermedio: eliminar `||` antes del post-lexer.
+// Esto fuerza error de parseo cuando aparezca `||` en el código fuente.
+pub fn remove_double_pipe_tokens(tokens: Vec<Token>) -> Vec<Token> {
+    tokens
+        .into_iter()
+        .filter(|token| !matches!(token, Token::DoublePipe))
+        .collect()
+}
+
 fn find_matching_rbracket(tokens: &[Token], lbracket_idx: usize) -> Option<usize> {
     let mut depth = 0;
     for (i, token) in tokens.iter().enumerate().skip(lbracket_idx) {
@@ -482,6 +491,55 @@ fn parse_atomic_expr_end(tokens: &[Token], start: usize) -> Option<usize> {
     }
 }
 
+fn find_expression_end(tokens: &[Token], start: usize) -> Option<usize> {
+    let mut end = parse_atomic_expr_end(tokens, start)?;
+
+    loop {
+        if end + 1 >= tokens.len() {
+            return Some(end);
+        }
+
+        match &tokens[end + 1] {
+            Token::Dot => {
+                if end + 2 < tokens.len() && matches!(tokens[end + 2], Token::Identifier(_)) {
+                    end += 2;
+                } else {
+                    return Some(end);
+                }
+            }
+            Token::LParen => {
+                if let Some(rp) = find_matching_paren(tokens, end + 1) {
+                    end = rp;
+                } else {
+                    return None;
+                }
+            }
+            Token::LBracket => {
+                if let Some(rb) = find_matching_rbracket(tokens, end + 1) {
+                    end = rb;
+                } else {
+                    return None;
+                }
+            }
+            t if is_binary_operator_token(t) => {
+                let rhs_start = end + 2;
+                if rhs_start >= tokens.len() {
+                    return None;
+                }
+                end = parse_atomic_expr_end(tokens, rhs_start)?;
+            }
+            Token::Semicolon
+            | Token::Comma
+            | Token::RParen
+            | Token::RBrace
+            | Token::RBracket
+            | Token::Else
+            | Token::Elif => return Some(end),
+            _ => return Some(end),
+        }
+    }
+}
+
 fn find_inline_if_end(tokens: &[Token], if_start: usize) -> Option<usize> {
     if if_start >= tokens.len() || tokens[if_start] != Token::If {
         return None;
@@ -492,29 +550,51 @@ fn find_inline_if_end(tokens: &[Token], if_start: usize) -> Option<usize> {
     }
 
     let cond_end = find_matching_paren(tokens, if_start + 1)?;
-    let mut cursor = parse_atomic_expr_end(tokens, cond_end + 1)? + 1;
+    let mut cursor = find_expression_end(tokens, cond_end + 1)? + 1;
 
     while cursor < tokens.len() && tokens[cursor] == Token::Elif {
         if cursor + 1 >= tokens.len() || tokens[cursor + 1] != Token::LParen {
             return None;
         }
         let elif_cond_end = find_matching_paren(tokens, cursor + 1)?;
-        cursor = parse_atomic_expr_end(tokens, elif_cond_end + 1)? + 1;
+        cursor = find_expression_end(tokens, elif_cond_end + 1)? + 1;
     }
 
     if cursor >= tokens.len() || tokens[cursor] != Token::Else {
         return None;
     }
 
-    parse_atomic_expr_end(tokens, cursor + 1)
+    find_expression_end(tokens, cursor + 1)
 }
 
-pub fn wrap_inline_if_after_add_sub(tokens: Vec<Token>) -> Vec<Token> {
+fn is_binary_operator_token(token: &Token) -> bool {
+    matches!(
+        token,
+        Token::Plus
+            | Token::Minus
+            | Token::Star
+            | Token::Slash
+            | Token::Caret
+            | Token::Mod
+            | Token::EqualEqual
+            | Token::NotEqual
+            | Token::Less
+            | Token::Greater
+            | Token::LessEqual
+            | Token::GreaterEqual
+            | Token::And
+            | Token::Or
+            | Token::At
+            | Token::DoubleAt
+    )
+}
+
+pub fn wrap_inline_if_after_binary_ops(tokens: Vec<Token>) -> Vec<Token> {
     let mut result = tokens;
     let mut i = 0;
 
     while i + 1 < result.len() {
-        if matches!(result[i], Token::Plus | Token::Minus) && result[i + 1] == Token::If {
+        if is_binary_operator_token(&result[i]) && result[i + 1] == Token::If {
             if let Some(if_end) = find_inline_if_end(&result, i + 1) {
                 result.insert(i + 1, Token::LParen);
                 result.insert(if_end + 2, Token::RParen);
