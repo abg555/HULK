@@ -78,14 +78,16 @@ fn lex_safe(input: &str) -> Result<Vec<lexer::Token>, String> {
         }
     }
 
+    let tokens = lexer::remove_double_pipe_tokens(tokens);
+
     // Post-procesar tokens para agregar marcadores de lambda
     let tokens = lexer::add_lambda_tokens(tokens);
 
     // Post-procesar tokens para convertir | a || en list comprehensions
     let tokens = lexer::fix_list_comprehension_pipe(tokens);
 
-    // Post-procesar tokens para envolver if inline tras + o -
-    let tokens = lexer::wrap_inline_if_after_add_sub(tokens);
+    // Post-procesar tokens para envolver if inline tras operadores binarios
+    let tokens = lexer::wrap_inline_if_after_binary_ops(tokens);
 
     // Post-procesar tokens para marcar bloques usados en llamadas de macro: id(...) { ... }
     let tokens = lexer::mark_macro_block_calls(tokens);
