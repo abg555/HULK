@@ -375,13 +375,16 @@ def simplify(expr:Number) {
 //ejemplo 69
 print(simplify((42+0)*1));
 
+//ejemplo 70
+new Animal();
 
+//ejemplo 71
+let a = new Animal() in a.me();
 
+//ejemplo 72
+let lambda = 20 in print(lambda);
 
-
-
-
-
-
+//ejemplo 73
+print(1 * (if (true) 2 else 3 + 100) + 2);
 
 
