@@ -1,7 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::{Expr, KindExpr, FunctionDecl, TypeDecl, Span, LiteralValue};
-use crate::types::SemanticType;
+use crate::ast::{Expr, FunctionDecl, KindExpr, LiteralValue, Span, TypeDecl};
+use crate::semantic::symbol_table::{Symbol, SymbolKind};
+use crate::semantic::types::SemanticType;
 
 use super::{SemanticAnalyzer, SymbolRequirements};
 
@@ -35,15 +36,15 @@ impl SemanticAnalyzer {
                         })
                         .collect::<Vec<_>>();
                     let resolved_return = if func.return_type.is_some() {
-                        func
-                            .return_type
+                        func.return_type
                             .as_ref()
                             .map(SemanticType::from_type_ref)
                             .unwrap_or(SemanticType::Unknown)
                     } else {
                         self.infer_return_type(&func.body, func.body.span)
                     };
-                    self.inferred_function_params.insert(func.name.clone(), inferred);
+                    self.inferred_function_params
+                        .insert(func.name.clone(), inferred);
                     self.inferred_function_returns
                         .insert(func.name.clone(), resolved_return.clone());
                     let _ = self.symbols.update_type(
@@ -56,7 +57,8 @@ impl SemanticAnalyzer {
                     self.inferred_type_params
                         .insert(typ.name.clone(), inferred_type_params.clone());
 
-                    let mut method_map: HashMap<String, HashMap<String, SemanticType>> = HashMap::new();
+                    let mut method_map: HashMap<String, HashMap<String, SemanticType>> =
+                        HashMap::new();
                     let mut method_return_map: HashMap<String, SemanticType> = HashMap::new();
                     for method in &typ.methods {
                         let inferred = self.infer_param_types(method);
@@ -100,7 +102,10 @@ impl SemanticAnalyzer {
                             .get(&method.name)
                             .cloned()
                             .unwrap_or(SemanticType::Unknown);
-                        method_sigs.push((method.name.clone(), SemanticType::Function(params, Box::new(ret))));
+                        method_sigs.push((
+                            method.name.clone(),
+                            SemanticType::Function(params, Box::new(ret)),
+                        ));
                     }
 
                     if let Some(shape) = self.type_shapes.get_mut(&typ.name) {
@@ -132,7 +137,10 @@ impl SemanticAnalyzer {
     }
 
     /// Inferre tipos de parametros a partir de las restricciones recopiladas en el cuerpo.
-    pub(super) fn infer_param_types(&mut self, func: &FunctionDecl) -> HashMap<String, SemanticType> {
+    pub(super) fn infer_param_types(
+        &mut self,
+        func: &FunctionDecl,
+    ) -> HashMap<String, SemanticType> {
         let inferable = func
             .params
             .iter()
@@ -164,7 +172,10 @@ impl SemanticAnalyzer {
     }
 
     /// Inferre tipos de parametros de constructores de tipos declarados.
-    pub(super) fn infer_type_decl_params(&mut self, typ: &TypeDecl) -> HashMap<String, SemanticType> {
+    pub(super) fn infer_type_decl_params(
+        &mut self,
+        typ: &TypeDecl,
+    ) -> HashMap<String, SemanticType> {
         let inferable = typ
             .param
             .iter()
@@ -186,7 +197,13 @@ impl SemanticAnalyzer {
             );
         }
         for method in &typ.methods {
-            let mut shadow_stack = vec![method.params.iter().map(|param| param.name.clone()).collect()];
+            let mut shadow_stack = vec![
+                method
+                    .params
+                    .iter()
+                    .map(|param| param.name.clone())
+                    .collect(),
+            ];
             self.collect_inference_requirements(
                 &method.body,
                 &inferable,
@@ -198,7 +215,10 @@ impl SemanticAnalyzer {
         let mut inferred = HashMap::new();
         for name in inferable {
             let req = requirements.remove(&name).unwrap_or_default();
-            inferred.insert(name.clone(), self.synthesize_inferred_type(&name, req, self.type_decl_span(typ)));
+            inferred.insert(
+                name.clone(),
+                self.synthesize_inferred_type(&name, req, self.type_decl_span(typ)),
+            );
         }
 
         inferred
@@ -223,7 +243,9 @@ impl SemanticAnalyzer {
                 KindExpr::Block(block) if block.expressions.is_empty() => {
                     return_types.push(SemanticType::Boolean);
                 }
-                KindExpr::Array(_) => return_types.push(SemanticType::Vector(Box::new(SemanticType::Unknown))),
+                KindExpr::Array(_) => {
+                    return_types.push(SemanticType::Vector(Box::new(SemanticType::Unknown)))
+                }
                 _ => return_types.push(SemanticType::Unknown),
             }
         }
@@ -233,16 +255,14 @@ impl SemanticAnalyzer {
         }
 
         let first = return_types[0].clone();
-        let all_same = return_types.iter().all(|t| {
-            match (t, &first) {
-                (SemanticType::Number, SemanticType::Number) => true,
-                (SemanticType::String, SemanticType::String) => true,
-                (SemanticType::Boolean, SemanticType::Boolean) => true,
-                (SemanticType::Vector(_), SemanticType::Vector(_)) => true,
-                (SemanticType::Unknown, _) => true,
-                (_, SemanticType::Unknown) => true,
-                _ => false,
-            }
+        let all_same = return_types.iter().all(|t| match (t, &first) {
+            (SemanticType::Number, SemanticType::Number) => true,
+            (SemanticType::String, SemanticType::String) => true,
+            (SemanticType::Boolean, SemanticType::Boolean) => true,
+            (SemanticType::Vector(_), SemanticType::Vector(_)) => true,
+            (SemanticType::Unknown, _) => true,
+            (_, SemanticType::Unknown) => true,
+            _ => false,
         });
 
         if all_same {
@@ -266,7 +286,10 @@ impl SemanticAnalyzer {
                 if block.expressions.is_empty() {
                     returns.push(expr);
                 } else {
-                    self.collect_returns_helper(&block.expressions[block.expressions.len() - 1], returns);
+                    self.collect_returns_helper(
+                        &block.expressions[block.expressions.len() - 1],
+                        returns,
+                    );
                 }
             }
             KindExpr::If(if_expr) => {
@@ -309,7 +332,10 @@ impl SemanticAnalyzer {
                                span: Span| {
             let entry = requirements.entry(name.to_string()).or_default();
             if let Some(existing) = &entry.concrete {
-                if existing != &ty && !existing.is_assignable_from(&ty) && !ty.is_assignable_from(existing) {
+                if existing != &ty
+                    && !existing.is_assignable_from(&ty)
+                    && !ty.is_assignable_from(existing)
+                {
                     diagnostics.error(
                         format!(
                             "La inferencia del simbolo {} es incompatible entre {} y {}",
@@ -331,15 +357,35 @@ impl SemanticAnalyzer {
                 }
             }
             KindExpr::Binary(bin) => {
-                self.collect_inference_requirements(&bin.left, inferable, shadow_stack, requirements);
-                self.collect_inference_requirements(&bin.right, inferable, shadow_stack, requirements);
+                self.collect_inference_requirements(
+                    &bin.left,
+                    inferable,
+                    shadow_stack,
+                    requirements,
+                );
+                self.collect_inference_requirements(
+                    &bin.right,
+                    inferable,
+                    shadow_stack,
+                    requirements,
+                );
 
                 let left_name = match &bin.left.kind {
-                    KindExpr::Variable(var) if inferable.contains(&var.name) && !is_shadowed(&var.name, shadow_stack) => Some(var.name.clone()),
+                    KindExpr::Variable(var)
+                        if inferable.contains(&var.name)
+                            && !is_shadowed(&var.name, shadow_stack) =>
+                    {
+                        Some(var.name.clone())
+                    }
                     _ => None,
                 };
                 let right_name = match &bin.right.kind {
-                    KindExpr::Variable(var) if inferable.contains(&var.name) && !is_shadowed(&var.name, shadow_stack) => Some(var.name.clone()),
+                    KindExpr::Variable(var)
+                        if inferable.contains(&var.name)
+                            && !is_shadowed(&var.name, shadow_stack) =>
+                    {
+                        Some(var.name.clone())
+                    }
                     _ => None,
                 };
 
@@ -347,33 +393,74 @@ impl SemanticAnalyzer {
                 match bin.operator {
                     Add | Sub | Mul | Div | Pow | Mod => {
                         if let Some(name) = left_name {
-                            record_concrete(requirements, &name, SemanticType::Number, &mut self.diagnostics, expr.span);
+                            record_concrete(
+                                requirements,
+                                &name,
+                                SemanticType::Number,
+                                &mut self.diagnostics,
+                                expr.span,
+                            );
                         }
                         if let Some(name) = right_name {
-                            record_concrete(requirements, &name, SemanticType::Number, &mut self.diagnostics, expr.span);
+                            record_concrete(
+                                requirements,
+                                &name,
+                                SemanticType::Number,
+                                &mut self.diagnostics,
+                                expr.span,
+                            );
                         }
                     }
                     And | Or => {
                         if let Some(name) = left_name {
-                            record_concrete(requirements, &name, SemanticType::Boolean, &mut self.diagnostics, expr.span);
+                            record_concrete(
+                                requirements,
+                                &name,
+                                SemanticType::Boolean,
+                                &mut self.diagnostics,
+                                expr.span,
+                            );
                         }
                         if let Some(name) = right_name {
-                            record_concrete(requirements, &name, SemanticType::Boolean, &mut self.diagnostics, expr.span);
+                            record_concrete(
+                                requirements,
+                                &name,
+                                SemanticType::Boolean,
+                                &mut self.diagnostics,
+                                expr.span,
+                            );
                         }
                     }
                     Concat | FullConcat => {
                         if let Some(name) = left_name {
-                            record_concrete(requirements, &name, SemanticType::String, &mut self.diagnostics, expr.span);
+                            record_concrete(
+                                requirements,
+                                &name,
+                                SemanticType::String,
+                                &mut self.diagnostics,
+                                expr.span,
+                            );
                         }
                         if let Some(name) = right_name {
-                            record_concrete(requirements, &name, SemanticType::String, &mut self.diagnostics, expr.span);
+                            record_concrete(
+                                requirements,
+                                &name,
+                                SemanticType::String,
+                                &mut self.diagnostics,
+                                expr.span,
+                            );
                         }
                     }
                     Equal | NotEqual | Less | Greater | LessEqual | GreaterEqual => {}
                 }
             }
             KindExpr::Unary(unary) => {
-                self.collect_inference_requirements(&unary.right, inferable, shadow_stack, requirements);
+                self.collect_inference_requirements(
+                    &unary.right,
+                    inferable,
+                    shadow_stack,
+                    requirements,
+                );
                 if let KindExpr::Variable(var) = &unary.right.kind
                     && inferable.contains(&var.name)
                     && !is_shadowed(&var.name, shadow_stack)
@@ -383,11 +470,22 @@ impl SemanticAnalyzer {
                         Negate => SemanticType::Number,
                         Not => SemanticType::Boolean,
                     };
-                    record_concrete(requirements, &var.name, ty, &mut self.diagnostics, expr.span);
+                    record_concrete(
+                        requirements,
+                        &var.name,
+                        ty,
+                        &mut self.diagnostics,
+                        expr.span,
+                    );
                 }
             }
             KindExpr::Call(call) => {
-                self.collect_inference_requirements(&call.callee, inferable, shadow_stack, requirements);
+                self.collect_inference_requirements(
+                    &call.callee,
+                    inferable,
+                    shadow_stack,
+                    requirements,
+                );
                 for arg in &call.arguments {
                     self.collect_inference_requirements(arg, inferable, shadow_stack, requirements);
                 }
@@ -397,12 +495,19 @@ impl SemanticAnalyzer {
                     && inferable.contains(&var.name)
                     && !is_shadowed(&var.name, shadow_stack)
                 {
-                    requirements.entry(var.name.clone()).or_default().methods.insert(member.field.clone(), call.arguments.len());
+                    requirements
+                        .entry(var.name.clone())
+                        .or_default()
+                        .methods
+                        .insert(member.field.clone(), call.arguments.len());
                 } else if let KindExpr::Variable(var) = &call.callee.kind
                     && inferable.contains(&var.name)
                     && !is_shadowed(&var.name, shadow_stack)
                 {
-                    requirements.entry(var.name.clone()).or_default().requires_function = Some(call.arguments.len());
+                    requirements
+                        .entry(var.name.clone())
+                        .or_default()
+                        .requires_function = Some(call.arguments.len());
                 }
             }
             KindExpr::BaseCall(base_call) => {
@@ -412,53 +517,133 @@ impl SemanticAnalyzer {
             }
             KindExpr::MacroCall(macr) => {
                 for arg in &macr.arguments {
-                    self.collect_inference_requirements(&arg.value, inferable, shadow_stack, requirements);
+                    self.collect_inference_requirements(
+                        &arg.value,
+                        inferable,
+                        shadow_stack,
+                        requirements,
+                    );
                 }
                 if let Some(action) = &macr.action {
-                    self.collect_inference_requirements(action, inferable, shadow_stack, requirements);
+                    self.collect_inference_requirements(
+                        action,
+                        inferable,
+                        shadow_stack,
+                        requirements,
+                    );
                 }
             }
             KindExpr::Let(let_expr) => {
                 for binding in &let_expr.bindings {
-                    self.collect_inference_requirements(&binding.initializer, inferable, shadow_stack, requirements);
+                    self.collect_inference_requirements(
+                        &binding.initializer,
+                        inferable,
+                        shadow_stack,
+                        requirements,
+                    );
                     let mut scope = HashSet::new();
                     scope.insert(binding.name.clone());
                     shadow_stack.push(scope);
                 }
-                self.collect_inference_requirements(&let_expr.body, inferable, shadow_stack, requirements);
+                self.collect_inference_requirements(
+                    &let_expr.body,
+                    inferable,
+                    shadow_stack,
+                    requirements,
+                );
                 for _ in &let_expr.bindings {
                     shadow_stack.pop();
                 }
             }
             KindExpr::Block(block) => {
                 for expr in &block.expressions {
-                    self.collect_inference_requirements(expr, inferable, shadow_stack, requirements);
+                    self.collect_inference_requirements(
+                        expr,
+                        inferable,
+                        shadow_stack,
+                        requirements,
+                    );
                 }
             }
             KindExpr::If(if_expr) => {
-                self.collect_inference_requirements(&if_expr.condition, inferable, shadow_stack, requirements);
-                self.collect_inference_requirements(&if_expr.then_branch, inferable, shadow_stack, requirements);
+                self.collect_inference_requirements(
+                    &if_expr.condition,
+                    inferable,
+                    shadow_stack,
+                    requirements,
+                );
+                self.collect_inference_requirements(
+                    &if_expr.then_branch,
+                    inferable,
+                    shadow_stack,
+                    requirements,
+                );
                 for (cond, body) in &if_expr.elif_branches {
-                    self.collect_inference_requirements(cond, inferable, shadow_stack, requirements);
-                    self.collect_inference_requirements(body, inferable, shadow_stack, requirements);
+                    self.collect_inference_requirements(
+                        cond,
+                        inferable,
+                        shadow_stack,
+                        requirements,
+                    );
+                    self.collect_inference_requirements(
+                        body,
+                        inferable,
+                        shadow_stack,
+                        requirements,
+                    );
                 }
-                self.collect_inference_requirements(&if_expr.else_branch, inferable, shadow_stack, requirements);
+                self.collect_inference_requirements(
+                    &if_expr.else_branch,
+                    inferable,
+                    shadow_stack,
+                    requirements,
+                );
             }
             KindExpr::While(while_expr) => {
-                self.collect_inference_requirements(&while_expr.condition, inferable, shadow_stack, requirements);
-                self.collect_inference_requirements(&while_expr.body, inferable, shadow_stack, requirements);
+                self.collect_inference_requirements(
+                    &while_expr.condition,
+                    inferable,
+                    shadow_stack,
+                    requirements,
+                );
+                self.collect_inference_requirements(
+                    &while_expr.body,
+                    inferable,
+                    shadow_stack,
+                    requirements,
+                );
             }
             KindExpr::For(for_expr) => {
-                self.collect_inference_requirements(&for_expr.iterable, inferable, shadow_stack, requirements);
+                self.collect_inference_requirements(
+                    &for_expr.iterable,
+                    inferable,
+                    shadow_stack,
+                    requirements,
+                );
                 let mut scope = HashSet::new();
                 scope.insert(for_expr.variable.clone());
                 shadow_stack.push(scope);
-                self.collect_inference_requirements(&for_expr.body, inferable, shadow_stack, requirements);
+                self.collect_inference_requirements(
+                    &for_expr.body,
+                    inferable,
+                    shadow_stack,
+                    requirements,
+                );
                 shadow_stack.pop();
             }
             KindExpr::Assign(assign) => {
-                self.collect_inference_requirements(&assign.target, inferable, shadow_stack, requirements);
-                self.collect_inference_requirements(&assign.value, inferable, shadow_stack, requirements);
+                self.collect_inference_requirements(
+                    &assign.target,
+                    inferable,
+                    shadow_stack,
+                    requirements,
+                );
+                self.collect_inference_requirements(
+                    &assign.value,
+                    inferable,
+                    shadow_stack,
+                    requirements,
+                );
                 if let KindExpr::Variable(var) = &assign.target.kind
                     && inferable.contains(&var.name)
                     && !is_shadowed(&var.name, shadow_stack)
@@ -471,33 +656,72 @@ impl SemanticAnalyzer {
                         },
                         _ => SemanticType::Unknown,
                     };
-                    record_concrete(requirements, &var.name, value_ty, &mut self.diagnostics, expr.span);
+                    record_concrete(
+                        requirements,
+                        &var.name,
+                        value_ty,
+                        &mut self.diagnostics,
+                        expr.span,
+                    );
                 }
             }
             KindExpr::MemberAccess(member) => {
-                self.collect_inference_requirements(&member.object, inferable, shadow_stack, requirements);
+                self.collect_inference_requirements(
+                    &member.object,
+                    inferable,
+                    shadow_stack,
+                    requirements,
+                );
             }
             KindExpr::Index(index) => {
-                self.collect_inference_requirements(&index.object, inferable, shadow_stack, requirements);
-                self.collect_inference_requirements(&index.index, inferable, shadow_stack, requirements);
+                self.collect_inference_requirements(
+                    &index.object,
+                    inferable,
+                    shadow_stack,
+                    requirements,
+                );
+                self.collect_inference_requirements(
+                    &index.index,
+                    inferable,
+                    shadow_stack,
+                    requirements,
+                );
                 if let KindExpr::Variable(var) = &index.object.kind
                     && inferable.contains(&var.name)
                     && !is_shadowed(&var.name, shadow_stack)
                 {
-                    requirements.entry(var.name.clone()).or_default().requires_vector = true;
+                    requirements
+                        .entry(var.name.clone())
+                        .or_default()
+                        .requires_vector = true;
                 }
             }
             KindExpr::Array(array) => {
                 for element in &array.elements {
-                    self.collect_inference_requirements(element, inferable, shadow_stack, requirements);
+                    self.collect_inference_requirements(
+                        element,
+                        inferable,
+                        shadow_stack,
+                        requirements,
+                    );
                 }
             }
             KindExpr::ArrayComprehension(comp) => {
-                self.collect_inference_requirements(&comp.iterable, inferable, shadow_stack, requirements);
+                self.collect_inference_requirements(
+                    &comp.iterable,
+                    inferable,
+                    shadow_stack,
+                    requirements,
+                );
                 let mut scope = HashSet::new();
                 scope.insert(comp.variable.clone());
                 shadow_stack.push(scope);
-                self.collect_inference_requirements(&comp.element, inferable, shadow_stack, requirements);
+                self.collect_inference_requirements(
+                    &comp.element,
+                    inferable,
+                    shadow_stack,
+                    requirements,
+                );
                 shadow_stack.pop();
             }
             KindExpr::Lambda(lambda) => {
@@ -506,7 +730,12 @@ impl SemanticAnalyzer {
                     scope.insert(param.name.clone());
                     shadow_stack.push(scope);
                 }
-                self.collect_inference_requirements(&lambda.body, inferable, shadow_stack, requirements);
+                self.collect_inference_requirements(
+                    &lambda.body,
+                    inferable,
+                    shadow_stack,
+                    requirements,
+                );
                 for _ in &lambda.params {
                     shadow_stack.pop();
                 }
@@ -517,15 +746,35 @@ impl SemanticAnalyzer {
                 }
             }
             KindExpr::Is(is_expr) => {
-                self.collect_inference_requirements(&is_expr.expression, inferable, shadow_stack, requirements);
+                self.collect_inference_requirements(
+                    &is_expr.expression,
+                    inferable,
+                    shadow_stack,
+                    requirements,
+                );
             }
             KindExpr::As(as_expr) => {
-                self.collect_inference_requirements(&as_expr.expression, inferable, shadow_stack, requirements);
+                self.collect_inference_requirements(
+                    &as_expr.expression,
+                    inferable,
+                    shadow_stack,
+                    requirements,
+                );
             }
             KindExpr::Match(match_expr) => {
-                self.collect_inference_requirements(&match_expr.expression, inferable, shadow_stack, requirements);
+                self.collect_inference_requirements(
+                    &match_expr.expression,
+                    inferable,
+                    shadow_stack,
+                    requirements,
+                );
                 for case in &match_expr.cases {
-                    self.collect_inference_requirements(&case.body, inferable, shadow_stack, requirements);
+                    self.collect_inference_requirements(
+                        &case.body,
+                        inferable,
+                        shadow_stack,
+                        requirements,
+                    );
                 }
             }
         }
@@ -587,9 +836,9 @@ impl SemanticAnalyzer {
                 );
             }
 
-            self.symbols.define(crate::symbol_table::Symbol {
+            self.symbols.define(Symbol {
                 name: protocol_name.clone(),
-                kind: crate::symbol_table::SymbolKind::Protocol,
+                kind: SymbolKind::Protocol,
                 typ: SemanticType::Custom(protocol_name.clone()),
             });
             self.protocol_shapes.insert(

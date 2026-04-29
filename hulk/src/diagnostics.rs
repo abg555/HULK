@@ -50,7 +50,11 @@ impl DiagnosticCollector {
     }
 
     pub fn push(&mut self, diagnostic: Diagnostic) {
-        if self.diagnostics.iter().any(|existing| existing == &diagnostic) {
+        if self
+            .diagnostics
+            .iter()
+            .any(|existing| existing == &diagnostic)
+        {
             return;
         }
 

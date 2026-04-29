@@ -52,7 +52,8 @@ impl MacroExpander {
     fn expand_item(&mut self, item: Item) -> Item {
         match item {
             Item::Function(mut func) => {
-                func.body = self.expand_expr(&func.body, &HashMap::new(), &[], &mut Vec::new(), false);
+                func.body =
+                    self.expand_expr(&func.body, &HashMap::new(), &[], &mut Vec::new(), false);
                 Item::Function(func)
             }
             Item::Type(mut typ) => {
@@ -66,15 +67,25 @@ impl MacroExpander {
                     );
                 }
                 for method in &mut typ.methods {
-                    method.body = self.expand_expr(&method.body, &HashMap::new(), &[], &mut Vec::new(), false);
+                    method.body = self.expand_expr(
+                        &method.body,
+                        &HashMap::new(),
+                        &[],
+                        &mut Vec::new(),
+                        false,
+                    );
                 }
                 Item::Type(typ)
             }
             Item::Macro(macr) => Item::Macro(macr),
             Item::Protocol(proto) => Item::Protocol(proto),
-            Item::GlobalExpr(expr) => {
-                Item::GlobalExpr(self.expand_expr(&expr, &HashMap::new(), &[], &mut Vec::new(), false))
-            }
+            Item::GlobalExpr(expr) => Item::GlobalExpr(self.expand_expr(
+                &expr,
+                &HashMap::new(),
+                &[],
+                &mut Vec::new(),
+                false,
+            )),
         }
     }
 
@@ -94,9 +105,7 @@ impl MacroExpander {
                 }
 
                 if let Some(new_name) = self.lookup_rename(renames, &var.name) {
-                    mk_expr(KindExpr::Variable(VariableExpr {
-                        name: new_name,
-                    }))
+                    mk_expr(KindExpr::Variable(VariableExpr { name: new_name }))
                 } else {
                     expr.clone()
                 }
@@ -140,7 +149,13 @@ impl MacroExpander {
                     .arguments
                     .iter()
                     .map(|arg| {
-                        self.expand_expr(arg, substitutions, renames, expansion_stack, sanitize_locals)
+                        self.expand_expr(
+                            arg,
+                            substitutions,
+                            renames,
+                            expansion_stack,
+                            sanitize_locals,
+                        )
                     })
                     .collect::<Vec<_>>();
 
@@ -178,7 +193,13 @@ impl MacroExpander {
                     .arguments
                     .iter()
                     .map(|arg| {
-                        self.expand_expr(arg, substitutions, renames, expansion_stack, sanitize_locals)
+                        self.expand_expr(
+                            arg,
+                            substitutions,
+                            renames,
+                            expansion_stack,
+                            sanitize_locals,
+                        )
                     })
                     .collect(),
             })),
@@ -236,7 +257,13 @@ impl MacroExpander {
                     .expressions
                     .iter()
                     .map(|sub| {
-                        self.expand_expr(sub, substitutions, renames, expansion_stack, sanitize_locals)
+                        self.expand_expr(
+                            sub,
+                            substitutions,
+                            renames,
+                            expansion_stack,
+                            sanitize_locals,
+                        )
                     })
                     .collect(),
             })),
@@ -260,8 +287,20 @@ impl MacroExpander {
                     .iter()
                     .map(|(cond, body)| {
                         (
-                            self.expand_expr(cond, substitutions, renames, expansion_stack, sanitize_locals),
-                            self.expand_expr(body, substitutions, renames, expansion_stack, sanitize_locals),
+                            self.expand_expr(
+                                cond,
+                                substitutions,
+                                renames,
+                                expansion_stack,
+                                sanitize_locals,
+                            ),
+                            self.expand_expr(
+                                body,
+                                substitutions,
+                                renames,
+                                expansion_stack,
+                                sanitize_locals,
+                            ),
                         )
                     })
                     .collect(),
@@ -367,7 +406,13 @@ impl MacroExpander {
                     .elements
                     .iter()
                     .map(|element| {
-                        self.expand_expr(element, substitutions, renames, expansion_stack, sanitize_locals)
+                        self.expand_expr(
+                            element,
+                            substitutions,
+                            renames,
+                            expansion_stack,
+                            sanitize_locals,
+                        )
                     })
                     .collect(),
             })),
@@ -438,7 +483,13 @@ impl MacroExpander {
                     .arguments
                     .iter()
                     .map(|arg| {
-                        self.expand_expr(arg, substitutions, renames, expansion_stack, sanitize_locals)
+                        self.expand_expr(
+                            arg,
+                            substitutions,
+                            renames,
+                            expansion_stack,
+                            sanitize_locals,
+                        )
                     })
                     .collect(),
             })),
@@ -506,7 +557,8 @@ impl MacroExpander {
         sanitize_locals: bool,
     ) -> Expr {
         let Some(macr) = self.macros.get(&call.name).cloned() else {
-            self.diagnostics.error(format!("Macro no definida: {}", call.name), span);
+            self.diagnostics
+                .error(format!("Macro no definida: {}", call.name), span);
             return mk_expr(KindExpr::MacroCall(call.clone()));
         };
 
@@ -542,7 +594,13 @@ impl MacroExpander {
 
                     call_substitutions.insert(
                         param.name.clone(),
-                            self.expand_expr(action, substitutions, renames, expansion_stack, sanitize_locals),
+                        self.expand_expr(
+                            action,
+                            substitutions,
+                            renames,
+                            expansion_stack,
+                            sanitize_locals,
+                        ),
                     );
                 }
                 MacroParamKind::Normal | MacroParamKind::Symbolic | MacroParamKind::Placeholder => {
@@ -553,15 +611,25 @@ impl MacroExpander {
                         );
                         continue;
                     };
-                    if matches!(param.kind, MacroParamKind::Normal) && !matches!(arg.kind, MacroParamKind::Normal) {
+                    if matches!(param.kind, MacroParamKind::Normal)
+                        && !matches!(arg.kind, MacroParamKind::Normal)
+                    {
                         self.diagnostics.error(
-                            format!("La macro {} espera un argumento normal para {}", macr.name, param.name),
+                            format!(
+                                "La macro {} espera un argumento normal para {}",
+                                macr.name, param.name
+                            ),
                             span,
                         );
                     }
-                    if matches!(param.kind, MacroParamKind::Symbolic) && !matches!(arg.kind, MacroParamKind::Symbolic) {
+                    if matches!(param.kind, MacroParamKind::Symbolic)
+                        && !matches!(arg.kind, MacroParamKind::Symbolic)
+                    {
                         self.diagnostics.error(
-                            format!("La macro {} espera un argumento simbolico para {}", macr.name, param.name),
+                            format!(
+                                "La macro {} espera un argumento simbolico para {}",
+                                macr.name, param.name
+                            ),
                             span,
                         );
                     }
@@ -573,7 +641,10 @@ impl MacroExpander {
                             })),
                             _ => {
                                 self.diagnostics.error(
-                                    format!("El parametro {} de la macro {} espera un identificador", param.name, macr.name),
+                                    format!(
+                                        "El parametro {} de la macro {} espera un identificador",
+                                        param.name, macr.name
+                                    ),
                                     span,
                                 );
                                 self.expand_expr(
@@ -606,7 +677,12 @@ impl MacroExpander {
             );
         }
 
-        if call.action.is_some() && !macr.params.iter().any(|param| matches!(param.kind, MacroParamKind::Block)) {
+        if call.action.is_some()
+            && !macr
+                .params
+                .iter()
+                .any(|param| matches!(param.kind, MacroParamKind::Block))
+        {
             self.diagnostics.error(
                 format!("La macro {} no acepta bloque trailing", macr.name),
                 span,
@@ -625,9 +701,16 @@ impl MacroExpander {
         expanded
     }
 
-    fn expand_pattern(&mut self, pattern: &Pattern, sanitize_locals: bool) -> (Pattern, HashMap<String, String>) {
+    fn expand_pattern(
+        &mut self,
+        pattern: &Pattern,
+        sanitize_locals: bool,
+    ) -> (Pattern, HashMap<String, String>) {
         match pattern {
-            Pattern::Identifier { name, type_restriction } => {
+            Pattern::Identifier {
+                name,
+                type_restriction,
+            } => {
                 if sanitize_locals {
                     let fresh_name = self.fresh_name(name);
                     let mut bindings = HashMap::new();
@@ -649,7 +732,11 @@ impl MacroExpander {
                     )
                 }
             }
-            Pattern::Binary { left, operator, right } => {
+            Pattern::Binary {
+                left,
+                operator,
+                right,
+            } => {
                 let (left_pattern, left_bindings) = self.expand_pattern(left, sanitize_locals);
                 let (right_pattern, right_bindings) = self.expand_pattern(right, sanitize_locals);
                 let mut bindings = left_bindings;

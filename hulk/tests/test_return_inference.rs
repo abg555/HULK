@@ -103,7 +103,12 @@ let x: String = getNumber() in x;
 "#;
 
     let diagnostics = analyze_program(input).expect_err("expected type error");
-    assert!(diagnostics
-        .iter()
-        .any(|d| d.message.contains("incompatible") || d.message.contains("recibe") || d.message.contains("String") || d.message.contains("Number")));
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.message.contains("incompatible")
+                || d.message.contains("recibe")
+                || d.message.contains("String")
+                || d.message.contains("Number"))
+    );
 }

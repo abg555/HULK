@@ -8,7 +8,8 @@ fn rejects_type_mismatch_after_macro_expansion() {
     let y: String = add1(2) in y;
     "#;
 
-    let diagnostics = analyze_program(input).expect_err("expected macro expansion to expose the type mismatch");
+    let diagnostics =
+        analyze_program(input).expect_err("expected macro expansion to expose the type mismatch");
     assert!(diagnostics.iter().any(|diag| {
         diag.message.contains("Binding")
             && diag.message.contains("esperaba String")

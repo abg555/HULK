@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use crate::ast::Span;
-use crate::symbol_table::{Symbol, SymbolKind};
-use crate::types::SemanticType;
+use crate::semantic::symbol_table::{Symbol, SymbolKind};
+use crate::semantic::types::SemanticType;
 
 use super::SemanticAnalyzer;
 
@@ -60,7 +60,13 @@ impl SemanticAnalyzer {
     }
 
     /// Define una variable local ya inicializada.
-    pub(super) fn define_local(&mut self, name: &str, kind: SymbolKind, typ: SemanticType, span: Span) {
+    pub(super) fn define_local(
+        &mut self,
+        name: &str,
+        kind: SymbolKind,
+        typ: SemanticType,
+        span: Span,
+    ) {
         self.define_local_with_state(name, kind, typ, span, true);
     }
 
@@ -76,7 +82,10 @@ impl SemanticAnalyzer {
         // warn if this definition shadows a symbol in an outer scope
         if let Some(existing) = self.symbols.lookup(name) {
             self.diagnostics.warning(
-                format!("Sombra de simbolo: '{}' oculta un simbolo externo de tipo {:?}", name, existing.kind),
+                format!(
+                    "Sombra de simbolo: '{}' oculta un simbolo externo de tipo {:?}",
+                    name, existing.kind
+                ),
                 span,
             );
         }
@@ -88,10 +97,8 @@ impl SemanticAnalyzer {
         };
 
         if !self.symbols.define(symbol) {
-            self.diagnostics.error(
-                format!("Redefinicion de simbolo local: {}", name),
-                span,
-            );
+            self.diagnostics
+                .error(format!("Redefinicion de simbolo local: {}", name), span);
             return;
         }
 

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::types::SemanticType;
+use crate::semantic::types::SemanticType;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SymbolKind {
@@ -53,10 +53,7 @@ impl SymbolTable {
     }
 
     pub fn lookup(&self, name: &str) -> Option<&Symbol> {
-        self.scopes
-            .iter()
-            .rev()
-            .find_map(|scope| scope.get(name))
+        self.scopes.iter().rev().find_map(|scope| scope.get(name))
     }
 
     pub fn update_type(&mut self, name: &str, typ: SemanticType) -> bool {

@@ -1,11 +1,8 @@
 pub mod ast;
 pub mod diagnostics;
 pub mod lexer;
-pub mod macro_expander;
 pub mod node_ids;
 pub mod semantic;
-pub mod symbol_table;
-pub mod types;
 
 use lalrpop_util::lalrpop_mod;
 
@@ -14,8 +11,9 @@ lalrpop_util::lalrpop_mod!(pub parser);
 pub use ast::*;
 pub use diagnostics::Diagnostic;
 pub use lexer::*;
-pub use semantic::{SemanticAnalysis, SemanticAnalyzer};
 pub use parser::ProgramParser;
+pub use semantic::{SemanticAnalysis, SemanticAnalyzer};
+pub use semantic::{macro_expander, symbol_table, types};
 
 pub fn lex_safe(input: &str) -> Result<Vec<lexer::Token>, String> {
     use logos::Logos;
@@ -58,44 +56,46 @@ pub fn parse_program(input: &str) -> Result<Program, Vec<Diagnostic>> {
         .enumerate()
         .map(|(i, token)| (i, token, i + 1));
 
-    parser.parse(input_tokens).map_err(|error| {
-        let diagnostic = match error {
-            lalrpop_util::ParseError::InvalidToken { location } => Diagnostic::error(
-                "Token invalido durante el parseo",
-                Span {
-                    start: location,
-                    end: location,
-                },
-            ),
-            lalrpop_util::ParseError::UnrecognizedEof { location, .. } => Diagnostic::error(
-                "Fin de archivo inesperado",
-                Span {
-                    start: location,
-                    end: location,
-                },
-            ),
-            lalrpop_util::ParseError::UnrecognizedToken {
-                token: (start, _, end),
-                ..
-            } => Diagnostic::error("Token inesperado", Span { start, end }),
-            lalrpop_util::ParseError::ExtraToken {
-                token: (start, _, end),
-            } => Diagnostic::error("Token extra al final", Span { start, end }),
-            lalrpop_util::ParseError::User { .. } => Diagnostic::error(
-                "Error interno de parseo",
-                Span {
-                    start: 0,
-                    end: input.len(),
-                },
-            ),
-        };
-        vec![diagnostic]
-    })
-    .and_then(macro_expander::expand_program)
-    .map(|mut program| {
-        node_ids::assign_program_node_ids(&mut program);
-        program
-    })
+    parser
+        .parse(input_tokens)
+        .map_err(|error| {
+            let diagnostic = match error {
+                lalrpop_util::ParseError::InvalidToken { location } => Diagnostic::error(
+                    "Token invalido durante el parseo",
+                    Span {
+                        start: location,
+                        end: location,
+                    },
+                ),
+                lalrpop_util::ParseError::UnrecognizedEof { location, .. } => Diagnostic::error(
+                    "Fin de archivo inesperado",
+                    Span {
+                        start: location,
+                        end: location,
+                    },
+                ),
+                lalrpop_util::ParseError::UnrecognizedToken {
+                    token: (start, _, end),
+                    ..
+                } => Diagnostic::error("Token inesperado", Span { start, end }),
+                lalrpop_util::ParseError::ExtraToken {
+                    token: (start, _, end),
+                } => Diagnostic::error("Token extra al final", Span { start, end }),
+                lalrpop_util::ParseError::User { .. } => Diagnostic::error(
+                    "Error interno de parseo",
+                    Span {
+                        start: 0,
+                        end: input.len(),
+                    },
+                ),
+            };
+            vec![diagnostic]
+        })
+        .and_then(semantic::macro_expander::expand_program)
+        .map(|mut program| {
+            node_ids::assign_program_node_ids(&mut program);
+            program
+        })
 }
 
 pub fn analyze_program(input: &str) -> Result<SemanticAnalysis, Vec<Diagnostic>> {

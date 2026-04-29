@@ -1,7 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
-use crate::types::SemanticType;
+use crate::semantic::symbol_table::SymbolKind;
+use crate::semantic::types::SemanticType;
 
 use super::SemanticAnalyzer;
 
@@ -13,7 +14,7 @@ impl SemanticAnalyzer {
         if let Some(type_name) = &self.current_type_context {
             self.define_local(
                 "self",
-                crate::symbol_table::SymbolKind::Variable,
+                SymbolKind::Variable,
                 SemanticType::Custom(type_name.clone()),
                 func.body.span,
             );
@@ -84,7 +85,7 @@ impl SemanticAnalyzer {
                         .cloned()
                         .unwrap_or(SemanticType::Unknown)
                 });
-            self.define_local(&param.name, crate::symbol_table::SymbolKind::Variable, typ, func.body.span);
+            self.define_local(&param.name, SymbolKind::Variable, typ, func.body.span);
         }
 
         let prev_return = self.current_return_type.clone();
@@ -128,11 +129,12 @@ impl SemanticAnalyzer {
                     self.diagnostics
                         .error("'self' solo es valido dentro de metodos de tipo", expr.span);
                     SemanticType::Unknown
-                } else
-                if let Some(symbol) = self.symbols.lookup(&var.name) {
+                } else if let Some(symbol) = self.symbols.lookup(&var.name) {
                     let symbol_kind = symbol.kind;
                     let symbol_type = symbol.typ.clone();
-                    if symbol_kind == crate::symbol_table::SymbolKind::Variable && !self.is_definitely_assigned(&var.name) {
+                    if symbol_kind == SymbolKind::Variable
+                        && !self.is_definitely_assigned(&var.name)
+                    {
                         self.diagnostics.error(
                             format!("La variable {} puede no estar inicializada", var.name),
                             expr.span,
@@ -160,7 +162,12 @@ impl SemanticAnalyzer {
                         SemanticType::Number
                     }
                     UnaryOperator::Not => {
-                        self.expect_type(expr.span, &right, &SemanticType::Boolean, "operador '!' ");
+                        self.expect_type(
+                            expr.span,
+                            &right,
+                            &SemanticType::Boolean,
+                            "operador '!' ",
+                        );
                         SemanticType::Boolean
                     }
                 }
@@ -185,7 +192,8 @@ impl SemanticAnalyzer {
                         );
                     }
 
-                    for (idx, (expected, actual)) in params.iter().zip(arg_types.iter()).enumerate() {
+                    for (idx, (expected, actual)) in params.iter().zip(arg_types.iter()).enumerate()
+                    {
                         if !self.is_compatible_type(expected, actual) {
                             self.diagnostics.error(
                                 format!(
@@ -201,17 +209,16 @@ impl SemanticAnalyzer {
 
                     *ret
                 } else {
-                    self.diagnostics.error("Intento de llamada sobre un valor no invocable", expr.span);
+                    self.diagnostics
+                        .error("Intento de llamada sobre un valor no invocable", expr.span);
                     SemanticType::Unknown
                 }
             }
             KindExpr::BaseCall(call) => self.check_base_call(call, expr.span),
             KindExpr::MacroCall(call) => {
                 if self.symbols.lookup(&call.name).is_none() {
-                    self.diagnostics.error(
-                        format!("Macro no definida: {}", call.name),
-                        expr.span,
-                    );
+                    self.diagnostics
+                        .error(format!("Macro no definida: {}", call.name), expr.span);
                 }
                 for arg in &call.arguments {
                     self.check_expr(&arg.value);
@@ -245,24 +252,26 @@ impl SemanticAnalyzer {
                     let init_ty = self.check_expr(&binding.initializer);
                     let declared =
                         self.resolve_type_ref(binding.types.as_ref(), binding.initializer.span);
-                    let final_ty = if binding.types.is_none() && matches!(init_ty, SemanticType::Unknown) {
-                        let mut requirements: HashMap<String, super::SymbolRequirements> = HashMap::new();
-                        self.collect_inference_requirements(
-                            &let_expr.body,
-                            &body_inferable,
-                            &mut Vec::new(),
-                            &mut requirements,
-                        );
-                        self.synthesize_inferred_type(
-                            &binding.name,
-                            requirements.remove(&binding.name).unwrap_or_default(),
-                            binding.initializer.span,
-                        )
-                    } else if matches!(declared, SemanticType::Unknown) {
-                        init_ty.clone()
-                    } else {
-                        declared.clone()
-                    };
+                    let final_ty =
+                        if binding.types.is_none() && matches!(init_ty, SemanticType::Unknown) {
+                            let mut requirements: HashMap<String, super::SymbolRequirements> =
+                                HashMap::new();
+                            self.collect_inference_requirements(
+                                &let_expr.body,
+                                &body_inferable,
+                                &mut Vec::new(),
+                                &mut requirements,
+                            );
+                            self.synthesize_inferred_type(
+                                &binding.name,
+                                requirements.remove(&binding.name).unwrap_or_default(),
+                                binding.initializer.span,
+                            )
+                        } else if matches!(declared, SemanticType::Unknown) {
+                            init_ty.clone()
+                        } else {
+                            declared.clone()
+                        };
 
                     if binding.types.is_some() && !self.is_compatible_type(&declared, &init_ty) {
                         self.diagnostics.error(
@@ -275,7 +284,7 @@ impl SemanticAnalyzer {
                     }
                     self.define_local_with_state(
                         &binding.name,
-                        crate::symbol_table::SymbolKind::Variable,
+                        SymbolKind::Variable,
                         final_ty,
                         binding.initializer.span,
                         initializer_guaranteed,
@@ -314,7 +323,12 @@ impl SemanticAnalyzer {
                     );
                 }
                 let cond_ty = self.check_expr(&while_expr.condition);
-                self.expect_type(expr.span, &cond_ty, &SemanticType::Boolean, "condicion de while");
+                self.expect_type(
+                    expr.span,
+                    &cond_ty,
+                    &SemanticType::Boolean,
+                    "condicion de while",
+                );
                 let state_after_condition_eval = self.assigned_scopes.clone();
 
                 let mut loop_state = state_after_condition_eval.clone();
@@ -375,7 +389,12 @@ impl SemanticAnalyzer {
                 for _ in 0..Self::LOOP_FIXPOINT_MAX_ITERS {
                     self.assigned_scopes = loop_state.clone();
                     self.enter_scope();
-                    self.define_local(&for_expr.variable, crate::symbol_table::SymbolKind::Variable, element_ty.clone(), expr.span);
+                    self.define_local(
+                        &for_expr.variable,
+                        SymbolKind::Variable,
+                        element_ty.clone(),
+                        expr.span,
+                    );
                     self.mark_local_readonly(&for_expr.variable, "iterador de for");
                     self.check_expr(&for_expr.body);
                     self.exit_scope();
@@ -389,12 +408,10 @@ impl SemanticAnalyzer {
                 self.assigned_scopes = match min_iterations {
                     Some(0) => state_after_iterable_eval,
                     Some(_) => loop_state,
-                    None => {
-                        self.intersect_definite_assignment_states(
-                            &state_after_iterable_eval,
-                            &loop_state,
-                        )
-                    }
+                    None => self.intersect_definite_assignment_states(
+                        &state_after_iterable_eval,
+                        &loop_state,
+                    ),
                 };
                 SemanticType::Unknown
             }
@@ -443,7 +460,12 @@ impl SemanticAnalyzer {
             KindExpr::Index(index) => {
                 let obj_ty = self.check_expr(&index.object);
                 let idx_ty = self.check_expr(&index.index);
-                self.expect_type(expr.span, &idx_ty, &SemanticType::Number, "indice de arreglo");
+                self.expect_type(
+                    expr.span,
+                    &idx_ty,
+                    &SemanticType::Number,
+                    "indice de arreglo",
+                );
                 match obj_ty {
                     SemanticType::Vector(inner) => *inner,
                     other => {
@@ -478,7 +500,7 @@ impl SemanticAnalyzer {
                     SemanticType::Vector(inner) => *inner,
                     _ => SemanticType::Unknown,
                 };
-                self.define_local(&comp.variable, crate::symbol_table::SymbolKind::Variable, loop_ty, expr.span);
+                self.define_local(&comp.variable, SymbolKind::Variable, loop_ty, expr.span);
                 let elem_ty = self.check_expr(&comp.element);
                 self.exit_scope();
                 SemanticType::Vector(Box::new(elem_ty))
@@ -488,7 +510,12 @@ impl SemanticAnalyzer {
                 let mut params = Vec::new();
                 for param in &lambda.params {
                     let param_ty = self.resolve_type_ref(param.types.as_ref(), expr.span);
-                    self.define_local(&param.name, crate::symbol_table::SymbolKind::Variable, param_ty.clone(), expr.span);
+                    self.define_local(
+                        &param.name,
+                        SymbolKind::Variable,
+                        param_ty.clone(),
+                        expr.span,
+                    );
                     params.push(param_ty);
                 }
                 let body_ty = self.check_expr(&lambda.body);
@@ -499,7 +526,8 @@ impl SemanticAnalyzer {
                     .map(SemanticType::from_type_ref)
                     .unwrap_or(body_ty);
 
-                if let Some(expected_ret) = lambda.return_type.as_ref().map(SemanticType::from_type_ref)
+                if let Some(expected_ret) =
+                    lambda.return_type.as_ref().map(SemanticType::from_type_ref)
                 {
                     if !self.guarantees_value(&lambda.body) {
                         self.diagnostics.error(
@@ -515,7 +543,7 @@ impl SemanticAnalyzer {
             }
             KindExpr::New(new_expr) => {
                 if let Some(symbol) = self.symbols.lookup(&new_expr.type_name) {
-                    if symbol.kind != crate::symbol_table::SymbolKind::Type {
+                    if symbol.kind != SymbolKind::Type {
                         self.diagnostics.error(
                             format!("{} no es un tipo construible", new_expr.type_name),
                             expr.span,
@@ -619,7 +647,7 @@ impl SemanticAnalyzer {
             self.extract_is_narrowing(&if_expr.condition, span)
         {
             self.enter_scope();
-            self.define_local(&name, crate::symbol_table::SymbolKind::Variable, narrowed_type, span);
+            self.define_local(&name, SymbolKind::Variable, narrowed_type, span);
             let ty = self.check_expr(&if_expr.then_branch);
             self.exit_scope();
             ty
@@ -634,7 +662,12 @@ impl SemanticAnalyzer {
         for (elif_cond, elif_body) in &if_expr.elif_branches {
             self.assigned_scopes = state_before_if.clone();
             let elif_cond_ty = self.check_expr(elif_cond);
-            self.expect_type(span, &elif_cond_ty, &SemanticType::Boolean, "condicion de elif");
+            self.expect_type(
+                span,
+                &elif_cond_ty,
+                &SemanticType::Boolean,
+                "condicion de elif",
+            );
             self.assigned_scopes = state_before_if.clone();
             elif_types.push(self.check_expr(elif_body));
             branch_states.push(self.assigned_scopes.clone());
@@ -643,7 +676,8 @@ impl SemanticAnalyzer {
         self.assigned_scopes = state_before_if.clone();
         let else_ty = self.check_expr(&if_expr.else_branch);
         branch_states.push(self.assigned_scopes.clone());
-        self.assigned_scopes = self.merge_definite_assignment_states(&state_before_if, &branch_states);
+        self.assigned_scopes =
+            self.merge_definite_assignment_states(&state_before_if, &branch_states);
 
         let mut combined_ty = then_ty;
         for elif_ty in elif_types {
@@ -695,8 +729,9 @@ impl SemanticAnalyzer {
                     .iter()
                     .any(|previous| self.is_compatible_type(previous, current))
             });
-            let known_literal_match = known_scrutinee_literal
-                .and_then(|literal| self.pattern_matches_known_literal(&case.pattern, literal, span));
+            let known_literal_match = known_scrutinee_literal.and_then(|literal| {
+                self.pattern_matches_known_literal(&case.pattern, literal, span)
+            });
             let impossible_for_known_literal = matches!(known_literal_match, Some(false));
 
             if saw_default_case
@@ -721,19 +756,15 @@ impl SemanticAnalyzer {
             match &case.pattern {
                 Pattern::Literal(LiteralValue::Bool(true)) => {
                     if saw_true_case {
-                        self.diagnostics.error(
-                            "Patron duplicado: case true repetido",
-                            span,
-                        );
+                        self.diagnostics
+                            .error("Patron duplicado: case true repetido", span);
                     }
                     saw_true_case = true;
                 }
                 Pattern::Literal(LiteralValue::Bool(false)) => {
                     if saw_false_case {
-                        self.diagnostics.error(
-                            "Patron duplicado: case false repetido",
-                            span,
-                        );
+                        self.diagnostics
+                            .error("Patron duplicado: case false repetido", span);
                     }
                     saw_false_case = true;
                 }
@@ -754,10 +785,8 @@ impl SemanticAnalyzer {
                 }
                 Pattern::Default => {
                     if saw_default_case {
-                        self.diagnostics.error(
-                            "Patron duplicado: multiple default en match",
-                            span,
-                        );
+                        self.diagnostics
+                            .error("Patron duplicado: multiple default en match", span);
                     }
                     saw_default_case = true;
                 }
@@ -849,18 +878,13 @@ impl SemanticAnalyzer {
                     scrutinee_ty.clone()
                 };
 
-                self.define_local(name, crate::symbol_table::SymbolKind::Variable, bound_type.clone(), span);
+                self.define_local(name, SymbolKind::Variable, bound_type.clone(), span);
                 self.mark_local_readonly(name, "binding de patron de match");
 
                 if let Some(scrutinee_name) = scrutinee_name
                     && scrutinee_name != name
                 {
-                    self.define_local(
-                        scrutinee_name,
-                        crate::symbol_table::SymbolKind::Variable,
-                        bound_type,
-                        span,
-                    );
+                    self.define_local(scrutinee_name, SymbolKind::Variable, bound_type, span);
                     self.mark_local_readonly(scrutinee_name, "binding estrechado de match");
                 }
             }
@@ -890,7 +914,11 @@ impl SemanticAnalyzer {
     }
 
     /// Extrae un refinamiento de tipo a partir de una condicion `is`.
-    pub(super) fn extract_is_narrowing(&mut self, condition: &Expr, span: Span) -> Option<(String, SemanticType)> {
+    pub(super) fn extract_is_narrowing(
+        &mut self,
+        condition: &Expr,
+        span: Span,
+    ) -> Option<(String, SemanticType)> {
         let KindExpr::Is(is_expr) = &condition.kind else {
             return None;
         };
@@ -922,8 +950,10 @@ impl SemanticAnalyzer {
         };
 
         let Some(method_name) = self.current_method_context.clone() else {
-            self.diagnostics
-                .error("'base(...)' solo es valido dentro del cuerpo de un metodo", span);
+            self.diagnostics.error(
+                "'base(...)' solo es valido dentro del cuerpo de un metodo",
+                span,
+            );
             for arg in &call.arguments {
                 self.check_expr(arg);
             }
@@ -955,7 +985,9 @@ impl SemanticAnalyzer {
             .map(|arg| self.check_expr(arg))
             .collect::<Vec<_>>();
 
-        let Some(parent_signature) = self.lookup_member_type_in_parent_chain(&type_name, &method_name) else {
+        let Some(parent_signature) =
+            self.lookup_member_type_in_parent_chain(&type_name, &method_name)
+        else {
             self.diagnostics.error(
                 format!(
                     "No existe implementacion base para {}.{} en la jerarquia padre",

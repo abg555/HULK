@@ -2,15 +2,18 @@ use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
 use crate::diagnostics::{Diagnostic, DiagnosticCollector};
-use crate::symbol_table::{Symbol, SymbolKind, SymbolTable};
-use crate::types::SemanticType;
+use crate::semantic::symbol_table::{Symbol, SymbolKind, SymbolTable};
+use crate::semantic::types::SemanticType;
 
 // Internal modules
-mod scope;
-mod types;
+mod expr;
 mod flow;
 mod inference;
-mod expr;
+pub mod macro_expander;
+mod scope;
+pub mod symbol_table;
+mod type_checks;
+pub mod types;
 
 /// Enlace entre un tipo o protocolo hijo y su padre declarado.
 #[derive(Clone)]
@@ -142,7 +145,11 @@ impl SemanticAnalyzer {
                     );
                 }
                 Item::Type(typ) => {
-                    self.define_symbol(&typ.name, SymbolKind::Type, SemanticType::Custom(typ.name.clone()));
+                    self.define_symbol(
+                        &typ.name,
+                        SymbolKind::Type,
+                        SemanticType::Custom(typ.name.clone()),
+                    );
 
                     self.type_shapes
                         .insert(typ.name.clone(), self.build_type_shape(typ));
@@ -215,7 +222,10 @@ impl SemanticAnalyzer {
                 .as_ref()
                 .map(SemanticType::from_type_ref)
                 .unwrap_or(SemanticType::Unknown);
-            methods.insert(method.name.clone(), SemanticType::Function(params, Box::new(ret)));
+            methods.insert(
+                method.name.clone(),
+                SemanticType::Function(params, Box::new(ret)),
+            );
         }
 
         let parent = match &typ.parent {
@@ -241,7 +251,10 @@ impl SemanticAnalyzer {
                 .map(|p| self.resolve_type_ref_silent(p.types.as_ref()))
                 .collect::<Vec<_>>();
             let ret = SemanticType::from_type_ref(&method.return_type);
-            methods.insert(method.name.clone(), SemanticType::Function(params, Box::new(ret)));
+            methods.insert(
+                method.name.clone(),
+                SemanticType::Function(params, Box::new(ret)),
+            );
         }
 
         let parent = match proto.parent.as_deref() {
@@ -281,7 +294,9 @@ impl SemanticAnalyzer {
 
         // Validate parent constructor arguments if parent exists
         if let Some(parent) = &typ.parent {
-            if let SemanticType::Custom(parent_name) = self.resolve_type_ref(Some(parent), self.type_decl_span(typ)) {
+            if let SemanticType::Custom(parent_name) =
+                self.resolve_type_ref(Some(parent), self.type_decl_span(typ))
+            {
                 if let Some(parent_shape) = self.type_shapes.get(&parent_name).cloned() {
                     self.validate_parent_constructor_args(typ, &parent_name, &parent_shape);
                 }
@@ -349,7 +364,9 @@ impl SemanticAnalyzer {
                 );
             }
 
-            if let Some(parent_member) = self.lookup_member_type_in_parent_chain(&typ.name, &field.name) {
+            if let Some(parent_member) =
+                self.lookup_member_type_in_parent_chain(&typ.name, &field.name)
+            {
                 self.diagnostics.error(
                     format!(
                         "El campo {} en {} colisiona con miembro heredado de tipo {}",
@@ -379,7 +396,10 @@ impl SemanticAnalyzer {
                 }
 
                 // referencing inherited field is OK
-                if self.lookup_member_type_in_parent_chain(&typ.name, &acc).is_some() {
+                if self
+                    .lookup_member_type_in_parent_chain(&typ.name, &acc)
+                    .is_some()
+                {
                     continue;
                 }
 
@@ -393,7 +413,10 @@ impl SemanticAnalyzer {
                 );
                 // try to find the declaration span of the referenced field in this type
                 if let Some(decl) = typ.fields.iter().find(|f| f.name == acc) {
-                    let hint = format!("Declarado en span: {}..{}", decl.initializer.span.start, decl.initializer.span.end);
+                    let hint = format!(
+                        "Declarado en span: {}..{}",
+                        decl.initializer.span.start, decl.initializer.span.end
+                    );
                     diag = diag.with_hint(hint);
                 }
                 self.diagnostics.push(diag);
@@ -410,7 +433,8 @@ impl SemanticAnalyzer {
             }
 
             let init_ty = self.check_expr(&field.initializer);
-            let declared = self.resolve_type_ref(field.type_annotation.as_ref(), field.initializer.span);
+            let declared =
+                self.resolve_type_ref(field.type_annotation.as_ref(), field.initializer.span);
             if !self.is_compatible_type(&declared, &init_ty) {
                 self.diagnostics.error(
                     format!(
@@ -452,12 +476,16 @@ impl SemanticAnalyzer {
     /// Valida un protocolo declarado y la compatibilidad con su padre.
     fn check_protocol_decl(&mut self, proto: &ProtocolDecl) {
         if let Some(parent) = &proto.parent {
-            let parent_type = self.resolve_type_ref(Some(parent.as_ref()), self.protocol_decl_span(proto));
+            let parent_type =
+                self.resolve_type_ref(Some(parent.as_ref()), self.protocol_decl_span(proto));
             let parent_ok = matches!(parent_type, SemanticType::Custom(name)
                 if self.symbols.lookup(&name).map(|symbol| symbol.kind) == Some(SymbolKind::Protocol));
             if !parent_ok {
                 self.diagnostics.error(
-                    format!("El protocolo {} debe extender otro protocolo por nombre", proto.name),
+                    format!(
+                        "El protocolo {} debe extender otro protocolo por nombre",
+                        proto.name
+                    ),
                     self.protocol_decl_span(proto),
                 );
             }
@@ -466,7 +494,10 @@ impl SemanticAnalyzer {
         if let Some(TypeRef::Custom(parent_name)) = proto.parent.as_deref() {
             if !self.protocol_conforms_to_protocol(&proto.name, parent_name) {
                 self.diagnostics.error(
-                    format!("El protocolo {} no es compatible con su padre {}", proto.name, parent_name),
+                    format!(
+                        "El protocolo {} no es compatible con su padre {}",
+                        proto.name, parent_name
+                    ),
                     self.protocol_decl_span(proto),
                 );
             }
@@ -475,7 +506,10 @@ impl SemanticAnalyzer {
         if let Some(TypeRef::Custom(parent_name)) = proto.parent.as_deref() {
             if !self.protocol_conforms_to_protocol(&proto.name, parent_name) {
                 self.diagnostics.error(
-                    format!("El protocolo {} no es compatible con su padre {}", proto.name, parent_name),
+                    format!(
+                        "El protocolo {} no es compatible con su padre {}",
+                        proto.name, parent_name
+                    ),
                     self.protocol_decl_span(proto),
                 );
             }
@@ -533,7 +567,10 @@ impl SemanticAnalyzer {
                 }
                 None => {
                     self.diagnostics.error(
-                        format!("Tipo padre no definido: {} (usado por {})", link.parent, child),
+                        format!(
+                            "Tipo padre no definido: {} (usado por {})",
+                            link.parent, child
+                        ),
                         link.span,
                     );
                 }
@@ -617,11 +654,7 @@ impl SemanticAnalyzer {
             vec![SemanticType::Number, SemanticType::Number],
             SemanticType::Vector(Box::new(SemanticType::Number)),
         );
-        self.define_builtin_function(
-            "sqrt",
-            vec![SemanticType::Number],
-            SemanticType::Number,
-        );
+        self.define_builtin_function("sqrt", vec![SemanticType::Number], SemanticType::Number);
         self.define_builtin_function("sin", vec![SemanticType::Number], SemanticType::Number);
         self.define_builtin_function("cos", vec![SemanticType::Number], SemanticType::Number);
         self.define_builtin_function("exp", vec![SemanticType::Number], SemanticType::Number);

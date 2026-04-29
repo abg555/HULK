@@ -1,5 +1,5 @@
-use crate::ast::{Expr, KindExpr, Span, IfExpr, Pattern, LiteralValue};
-use crate::types::SemanticType;
+use crate::ast::{Expr, IfExpr, KindExpr, LiteralValue, Pattern, Span};
+use crate::semantic::types::SemanticType;
 
 use super::SemanticAnalyzer;
 
@@ -36,7 +36,9 @@ impl SemanticAnalyzer {
     /// Detecta si una expresion es seguramente no terminante.
     pub(super) fn definitely_non_terminating(&self, expr: &Expr) -> bool {
         match &expr.kind {
-            KindExpr::While(while_expr) => matches!(self.eval_const_bool(&while_expr.condition), Some(true)),
+            KindExpr::While(while_expr) => {
+                matches!(self.eval_const_bool(&while_expr.condition), Some(true))
+            }
             KindExpr::Block(block) => {
                 for sub in &block.expressions {
                     if self.definitely_non_terminating(sub) {
@@ -135,8 +137,8 @@ impl SemanticAnalyzer {
 
     /// Evalua una expresion como numero constante cuando es posible.
     pub(super) fn eval_const_number(&self, expr: &Expr) -> Option<f64> {
-        use crate::ast::UnaryOperator;
         use crate::ast::BinaryOperator;
+        use crate::ast::UnaryOperator;
 
         match &expr.kind {
             KindExpr::Literal(lit) => match lit.value {
@@ -170,8 +172,8 @@ impl SemanticAnalyzer {
 
     /// Evalua una expresion como booleano constante cuando es posible.
     pub(super) fn eval_const_bool(&self, expr: &Expr) -> Option<bool> {
-        use crate::ast::UnaryOperator;
         use crate::ast::BinaryOperator;
+        use crate::ast::UnaryOperator;
 
         match &expr.kind {
             KindExpr::Literal(lit) => match lit.value {
@@ -186,9 +188,9 @@ impl SemanticAnalyzer {
                 }
             }
             KindExpr::Binary(bin) => match bin.operator {
-                BinaryOperator::And => Some(
-                    self.eval_const_bool(&bin.left)? && self.eval_const_bool(&bin.right)?,
-                ),
+                BinaryOperator::And => {
+                    Some(self.eval_const_bool(&bin.left)? && self.eval_const_bool(&bin.right)?)
+                }
                 BinaryOperator::Or => {
                     Some(self.eval_const_bool(&bin.left)? || self.eval_const_bool(&bin.right)?)
                 }
@@ -451,7 +453,11 @@ impl SemanticAnalyzer {
     }
 
     /// Devuelve el tipo de cobertura esperable para un patron.
-    pub(super) fn pattern_coverage_type(&mut self, pattern: &Pattern, span: Span) -> Option<SemanticType> {
+    pub(super) fn pattern_coverage_type(
+        &mut self,
+        pattern: &Pattern,
+        span: Span,
+    ) -> Option<SemanticType> {
         match pattern {
             Pattern::Identifier {
                 type_restriction: Some(type_ref),
