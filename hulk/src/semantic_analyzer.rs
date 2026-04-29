@@ -25,6 +25,14 @@ struct ProtocolShape {
     parent: Option<String>,
 }
 
+#[derive(Clone, Default)]
+struct SymbolRequirements {
+    concrete: Option<SemanticType>,
+    methods: HashMap<String, usize>,
+    requires_function: Option<usize>,
+    requires_vector: bool,
+}
+
 #[derive(Debug)]
 pub struct SemanticAnalysis {
     pub inferred_types: HashMap<NodeId, SemanticType>,
@@ -35,11 +43,20 @@ pub struct SemanticAnalyzer {
     diagnostics: DiagnosticCollector,
     inferred_types: HashMap<NodeId, SemanticType>,
     assigned_scopes: Vec<HashMap<String, bool>>,
+    readonly_scopes: Vec<HashMap<String, String>>,
     current_return_type: Option<SemanticType>,
+    current_type_context: Option<String>,
+    current_method_context: Option<String>,
     type_parents: HashMap<String, ParentLink>,
     protocol_parents: HashMap<String, ParentLink>,
     type_shapes: HashMap<String, TypeShape>,
     protocol_shapes: HashMap<String, ProtocolShape>,
+    inferred_function_params: HashMap<String, HashMap<String, SemanticType>>,
+    inferred_function_returns: HashMap<String, SemanticType>,
+    inferred_type_params: HashMap<String, HashMap<String, SemanticType>>,
+    inferred_method_params: HashMap<String, HashMap<String, HashMap<String, SemanticType>>>,
+    inferred_method_returns: HashMap<String, HashMap<String, SemanticType>>,
+    synthetic_protocol_counter: usize,
 }
 
 impl SemanticAnalyzer {
@@ -51,11 +68,20 @@ impl SemanticAnalyzer {
             diagnostics: DiagnosticCollector::new(),
             inferred_types: HashMap::new(),
             assigned_scopes: vec![HashMap::new()],
+            readonly_scopes: vec![HashMap::new()],
             current_return_type: None,
+            current_type_context: None,
+            current_method_context: None,
             type_parents: HashMap::new(),
             protocol_parents: HashMap::new(),
             type_shapes: HashMap::new(),
             protocol_shapes: HashMap::new(),
+            inferred_function_params: HashMap::new(),
+            inferred_function_returns: HashMap::new(),
+            inferred_type_params: HashMap::new(),
+            inferred_method_params: HashMap::new(),
+            inferred_method_returns: HashMap::new(),
+            synthetic_protocol_counter: 0,
         };
         analyzer.install_prelude();
         analyzer
@@ -64,6 +90,7 @@ impl SemanticAnalyzer {
     pub fn analyze(mut self, program: &Program) -> Result<SemanticAnalysis, Vec<Diagnostic>> {
         self.collect_top_level(program);
         self.validate_hierarchies();
+        self.infer_program_annotations(program);
 
         for item in &program.items {
             self.check_item(item);
@@ -207,6 +234,131 @@ impl SemanticAnalyzer {
         ProtocolShape { methods, parent }
     }
 
+    fn infer_program_annotations(&mut self, program: &Program) {
+        self.inferred_function_params.clear();
+        self.inferred_function_returns.clear();
+        self.inferred_type_params.clear();
+        self.inferred_method_params.clear();
+        self.inferred_method_returns.clear();
+
+        for item in &program.items {
+            match item {
+                Item::Function(func) => {
+                    let inferred = self.infer_param_types(func);
+                    let resolved_params = func
+                        .params
+                        .iter()
+                        .map(|param| {
+                            param
+                                .types
+                                .as_ref()
+                                .map(SemanticType::from_type_ref)
+                                .unwrap_or_else(|| {
+                                    inferred
+                                        .get(&param.name)
+                                        .cloned()
+                                        .unwrap_or(SemanticType::Unknown)
+                                })
+                        })
+                        .collect::<Vec<_>>();
+                    let resolved_return = if func.return_type.is_some() {
+                        func
+                            .return_type
+                            .as_ref()
+                            .map(SemanticType::from_type_ref)
+                            .unwrap_or(SemanticType::Unknown)
+                    } else {
+                        self.infer_return_type(&func.body, func.body.span)
+                    };
+                    self.inferred_function_params.insert(func.name.clone(), inferred);
+                    self.inferred_function_returns
+                        .insert(func.name.clone(), resolved_return.clone());
+                    let _ = self.symbols.update_type(
+                        &func.name,
+                        SemanticType::Function(resolved_params, Box::new(resolved_return)),
+                    );
+                }
+                Item::Type(typ) => {
+                    let inferred_type_params = self.infer_type_decl_params(typ);
+                    self.inferred_type_params
+                        .insert(typ.name.clone(), inferred_type_params.clone());
+
+                    let mut method_map: HashMap<String, HashMap<String, SemanticType>> = HashMap::new();
+                    let mut method_return_map: HashMap<String, SemanticType> = HashMap::new();
+                    for method in &typ.methods {
+                        let inferred = self.infer_param_types(method);
+                        method_map.insert(method.name.clone(), inferred.clone());
+                        let ret = if method.return_type.is_some() {
+                            method
+                                .return_type
+                                .as_ref()
+                                .map(SemanticType::from_type_ref)
+                                .unwrap_or(SemanticType::Unknown)
+                        } else {
+                            self.infer_return_type(&method.body, method.body.span)
+                        };
+                        method_return_map.insert(method.name.clone(), ret);
+                    }
+                    self.inferred_method_params
+                        .insert(typ.name.clone(), method_map.clone());
+                    self.inferred_method_returns
+                        .insert(typ.name.clone(), method_return_map.clone());
+
+                    // Compute all method signatures before updating the shape
+                    let mut method_sigs = Vec::new();
+                    for method in &typ.methods {
+                        let inferred = method_map.get(&method.name).cloned().unwrap_or_default();
+                        let params = method
+                            .params
+                            .iter()
+                            .map(|param| {
+                                param
+                                    .types
+                                    .as_ref()
+                                    .map(SemanticType::from_type_ref)
+                                    .unwrap_or_else(|| {
+                                        inferred
+                                            .get(&param.name)
+                                            .cloned()
+                                            .unwrap_or(SemanticType::Unknown)
+                                    })
+                            })
+                            .collect::<Vec<_>>();
+                        let ret = method_return_map
+                            .get(&method.name)
+                            .cloned()
+                            .unwrap_or(SemanticType::Unknown);
+                        method_sigs.push((method.name.clone(), SemanticType::Function(params, Box::new(ret))));
+                    }
+
+                    if let Some(shape) = self.type_shapes.get_mut(&typ.name) {
+                        shape.ctor_params = typ
+                            .param
+                            .iter()
+                            .map(|param| {
+                                param
+                                    .types
+                                    .as_ref()
+                                    .map(SemanticType::from_type_ref)
+                                    .unwrap_or_else(|| {
+                                        inferred_type_params
+                                            .get(&param.name)
+                                            .cloned()
+                                            .unwrap_or(SemanticType::Unknown)
+                                    })
+                            })
+                            .collect();
+
+                        for (method_name, method_type) in method_sigs {
+                            shape.methods.insert(method_name, method_type);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     fn check_item(&mut self, item: &Item) {
         match item {
             Item::Function(func) => self.check_function_decl(func),
@@ -221,8 +373,81 @@ impl SemanticAnalyzer {
 
     fn check_function_decl(&mut self, func: &FunctionDecl) {
         self.enter_scope();
+
+        if let Some(type_name) = &self.current_type_context {
+            self.define_local(
+                "self",
+                SymbolKind::Variable,
+                SemanticType::Custom(type_name.clone()),
+                func.body.span,
+            );
+            self.mark_local_readonly("self", "self es de solo lectura");
+        }
+
+        let inferred_param_types = if let Some(type_name) = &self.current_type_context {
+            self.inferred_method_params
+                .get(type_name)
+                .and_then(|methods| methods.get(&func.name))
+                .cloned()
+                .unwrap_or_else(|| self.infer_param_types(func))
+        } else {
+            self.inferred_function_params
+                .get(&func.name)
+                .cloned()
+                .unwrap_or_else(|| self.infer_param_types(func))
+        };
+        let resolved_param_types = func
+            .params
+            .iter()
+            .map(|param| {
+                param
+                    .types
+                    .as_ref()
+                    .map(|type_ref| SemanticType::from_type_ref(type_ref))
+                    .unwrap_or_else(|| {
+                        inferred_param_types
+                            .get(&param.name)
+                            .cloned()
+                            .unwrap_or(SemanticType::Unknown)
+                    })
+            })
+            .collect::<Vec<_>>();
+
+        let resolved_return_type = func
+            .return_type
+            .as_ref()
+            .map(SemanticType::from_type_ref)
+            .unwrap_or_else(|| {
+                if let Some(type_name) = &self.current_type_context {
+                    self.inferred_method_returns
+                        .get(type_name)
+                        .and_then(|methods| methods.get(&func.name))
+                        .cloned()
+                        .unwrap_or(SemanticType::Unknown)
+                } else {
+                    self.inferred_function_returns
+                        .get(&func.name)
+                        .cloned()
+                        .unwrap_or(SemanticType::Unknown)
+                }
+            });
+
+        let _ = self.symbols.update_type(
+            &func.name,
+            SemanticType::Function(resolved_param_types, Box::new(resolved_return_type)),
+        );
+
         for param in &func.params {
-            let typ = self.resolve_type_ref(param.types.as_ref(), func.body.span);
+            let typ = param
+                .types
+                .as_ref()
+                .map(|type_ref| self.resolve_type_ref(Some(type_ref), func.body.span))
+                .unwrap_or_else(|| {
+                    inferred_param_types
+                        .get(&param.name)
+                        .cloned()
+                        .unwrap_or(SemanticType::Unknown)
+                });
             self.define_local(&param.name, SymbolKind::Variable, typ, func.body.span);
         }
 
@@ -267,8 +492,66 @@ impl SemanticAnalyzer {
             }
         }
 
+        // Validate parent constructor arguments if parent exists
+        if let Some(parent) = &typ.parent {
+            if let SemanticType::Custom(parent_name) = self.resolve_type_ref(Some(parent), self.type_decl_span(typ)) {
+                if let Some(parent_shape) = self.type_shapes.get(&parent_name).cloned() {
+                    self.validate_parent_constructor_args(typ, &parent_name, &parent_shape);
+                }
+            }
+        }
+
+        let inferred_type_params = self
+            .inferred_type_params
+            .get(&typ.name)
+            .cloned()
+            .unwrap_or_else(|| self.infer_type_decl_params(typ));
+        if let Some(shape) = self.type_shapes.get_mut(&typ.name) {
+            shape.ctor_params = typ
+                .param
+                .iter()
+                .map(|param| {
+                    param
+                        .types
+                        .as_ref()
+                        .map(SemanticType::from_type_ref)
+                        .unwrap_or_else(|| {
+                            inferred_type_params
+                                .get(&param.name)
+                                .cloned()
+                                .unwrap_or(SemanticType::Unknown)
+                        })
+                })
+                .collect();
+        }
+
         self.enter_scope();
+        let prev_type_context = self.current_type_context.clone();
+        self.current_type_context = Some(typ.name.clone());
+
+        for param in &typ.param {
+            let param_ty = param
+                .types
+                .as_ref()
+                .map(SemanticType::from_type_ref)
+                .unwrap_or_else(|| {
+                    inferred_type_params
+                        .get(&param.name)
+                        .cloned()
+                        .unwrap_or(SemanticType::Unknown)
+                });
+            self.define_local_with_state(
+                &param.name,
+                SymbolKind::Variable,
+                param_ty,
+                self.type_decl_span(typ),
+                true,
+            );
+            self.mark_local_readonly(&param.name, "argumento de tipo es de solo lectura");
+        }
+
         let mut field_names = HashSet::new();
+        let mut initialized_fields: HashSet<String> = HashSet::new();
         let mut method_names = HashSet::new();
 
         for field in &typ.fields {
@@ -287,6 +570,46 @@ impl SemanticAnalyzer {
                     ),
                     field.initializer.span,
                 );
+            }
+
+            // Check that the field initializer does not access later fields via `self.<field>`
+            let mut accessed: Vec<String> = Vec::new();
+            self.collect_self_member_accesses(&field.initializer, &mut accessed);
+            for acc in accessed {
+                if acc == field.name {
+                    self.diagnostics.warning(
+                        format!(
+                            "El inicializador del campo {} en {} referencia a sí mismo",
+                            field.name, typ.name
+                        ),
+                        field.initializer.span,
+                    );
+                    continue;
+                }
+
+                if initialized_fields.contains(&acc) {
+                    continue; // referencing previously-initialized sibling field is OK
+                }
+
+                // referencing inherited field is OK
+                if self.lookup_member_type_in_parent_chain(&typ.name, &acc).is_some() {
+                    continue;
+                }
+
+                // otherwise it's accessing a field declared later -> emit warning with hint to declaration if available
+                let mut diag = Diagnostic::warning(
+                    format!(
+                        "El inicializador del campo {} en {} accede al campo {} declarado después (inicialización parcial)",
+                        field.name, typ.name, acc
+                    ),
+                    field.initializer.span,
+                );
+                // try to find the declaration span of the referenced field in this type
+                if let Some(decl) = typ.fields.iter().find(|f| f.name == acc) {
+                    let hint = format!("Declarado en span: {}..{}", decl.initializer.span.start, decl.initializer.span.end);
+                    diag = diag.with_hint(hint);
+                }
+                self.diagnostics.push(diag);
             }
 
             if !self.guarantees_value(&field.initializer) {
@@ -317,6 +640,7 @@ impl SemanticAnalyzer {
                 field.initializer.span,
                 self.guarantees_value(&field.initializer),
             );
+            initialized_fields.insert(field.name.clone());
         }
 
         for method in &typ.methods {
@@ -328,10 +652,54 @@ impl SemanticAnalyzer {
             }
 
             self.validate_method_override(typ, method);
+            let prev_method_context = self.current_method_context.clone();
+            self.current_method_context = Some(method.name.clone());
             self.check_function_decl(method);
+            self.current_method_context = prev_method_context;
         }
 
+        self.current_type_context = prev_type_context;
         self.exit_scope();
+    }
+
+    fn infer_type_decl_params(&mut self, typ: &TypeDecl) -> HashMap<String, SemanticType> {
+        let inferable = typ
+            .param
+            .iter()
+            .filter(|param| param.types.is_none())
+            .map(|param| param.name.clone())
+            .collect::<HashSet<_>>();
+
+        if inferable.is_empty() {
+            return HashMap::new();
+        }
+
+        let mut requirements: HashMap<String, SymbolRequirements> = HashMap::new();
+        for field in &typ.fields {
+            self.collect_inference_requirements(
+                &field.initializer,
+                &inferable,
+                &mut Vec::new(),
+                &mut requirements,
+            );
+        }
+        for method in &typ.methods {
+            let mut shadow_stack = vec![method.params.iter().map(|param| param.name.clone()).collect()];
+            self.collect_inference_requirements(
+                &method.body,
+                &inferable,
+                &mut shadow_stack,
+                &mut requirements,
+            );
+        }
+
+        let mut inferred = HashMap::new();
+        for name in inferable {
+            let req = requirements.remove(&name).unwrap_or_default();
+            inferred.insert(name.clone(), self.synthesize_inferred_type(&name, req, self.type_decl_span(typ)));
+        }
+
+        inferred
     }
 
     fn check_protocol_decl(&mut self, proto: &ProtocolDecl) {
@@ -400,6 +768,390 @@ impl SemanticAnalyzer {
         self.exit_scope();
     }
 
+    fn infer_param_types(&mut self, func: &FunctionDecl) -> HashMap<String, SemanticType> {
+        let inferable = func
+            .params
+            .iter()
+            .filter(|param| param.types.is_none())
+            .map(|param| param.name.clone())
+            .collect::<HashSet<_>>();
+
+        if inferable.is_empty() {
+            return HashMap::new();
+        }
+
+        let mut requirements: HashMap<String, SymbolRequirements> = HashMap::new();
+        let mut shadow_stack: Vec<HashSet<String>> = Vec::new();
+        self.collect_inference_requirements(
+            &func.body,
+            &inferable,
+            &mut shadow_stack,
+            &mut requirements,
+        );
+
+        let mut inferred = HashMap::new();
+        for name in inferable {
+            let req = requirements.remove(&name).unwrap_or_default();
+            let inferred_ty = self.synthesize_inferred_type(&name, req, func.body.span);
+            inferred.insert(name, inferred_ty);
+        }
+
+        inferred
+    }
+
+    fn collect_inference_requirements(
+        &mut self,
+        expr: &Expr,
+        inferable: &HashSet<String>,
+        shadow_stack: &mut Vec<HashSet<String>>,
+        requirements: &mut HashMap<String, SymbolRequirements>,
+    ) {
+        let is_shadowed = |name: &str, stack: &Vec<HashSet<String>>| -> bool {
+            stack.iter().rev().any(|scope| scope.contains(name))
+        };
+
+        let record_concrete = |requirements: &mut HashMap<String, SymbolRequirements>,
+                               name: &str,
+                               ty: SemanticType,
+                               diagnostics: &mut DiagnosticCollector,
+                               span: Span| {
+            let entry = requirements.entry(name.to_string()).or_default();
+            if let Some(existing) = &entry.concrete {
+                if existing != &ty && !existing.is_assignable_from(&ty) && !ty.is_assignable_from(existing) {
+                    diagnostics.error(
+                        format!(
+                            "La inferencia del simbolo {} es incompatible entre {} y {}",
+                            name, existing, ty
+                        ),
+                        span,
+                    );
+                }
+            } else {
+                entry.concrete = Some(ty);
+            }
+        };
+
+        match &expr.kind {
+            KindExpr::Literal(_) => {}
+            KindExpr::Variable(var) => {
+                if inferable.contains(&var.name) && !is_shadowed(&var.name, shadow_stack) {
+                    requirements.entry(var.name.clone()).or_default();
+                }
+            }
+            KindExpr::Binary(bin) => {
+                self.collect_inference_requirements(&bin.left, inferable, shadow_stack, requirements);
+                self.collect_inference_requirements(&bin.right, inferable, shadow_stack, requirements);
+
+                let left_name = match &bin.left.kind {
+                    KindExpr::Variable(var) if inferable.contains(&var.name) && !is_shadowed(&var.name, shadow_stack) => Some(var.name.clone()),
+                    _ => None,
+                };
+                let right_name = match &bin.right.kind {
+                    KindExpr::Variable(var) if inferable.contains(&var.name) && !is_shadowed(&var.name, shadow_stack) => Some(var.name.clone()),
+                    _ => None,
+                };
+
+                match bin.operator {
+                    BinaryOperator::Add
+                    | BinaryOperator::Sub
+                    | BinaryOperator::Mul
+                    | BinaryOperator::Div
+                    | BinaryOperator::Pow
+                    | BinaryOperator::Mod => {
+                        if let Some(name) = left_name {
+                            record_concrete(requirements, &name, SemanticType::Number, &mut self.diagnostics, expr.span);
+                        }
+                        if let Some(name) = right_name {
+                            record_concrete(requirements, &name, SemanticType::Number, &mut self.diagnostics, expr.span);
+                        }
+                    }
+                    BinaryOperator::And | BinaryOperator::Or => {
+                        if let Some(name) = left_name {
+                            record_concrete(requirements, &name, SemanticType::Boolean, &mut self.diagnostics, expr.span);
+                        }
+                        if let Some(name) = right_name {
+                            record_concrete(requirements, &name, SemanticType::Boolean, &mut self.diagnostics, expr.span);
+                        }
+                    }
+                    BinaryOperator::Concat | BinaryOperator::FullConcat => {
+                        if let Some(name) = left_name {
+                            record_concrete(requirements, &name, SemanticType::String, &mut self.diagnostics, expr.span);
+                        }
+                        if let Some(name) = right_name {
+                            record_concrete(requirements, &name, SemanticType::String, &mut self.diagnostics, expr.span);
+                        }
+                    }
+                    BinaryOperator::Equal
+                    | BinaryOperator::NotEqual
+                    | BinaryOperator::Less
+                    | BinaryOperator::Greater
+                    | BinaryOperator::LessEqual
+                    | BinaryOperator::GreaterEqual => {}
+                }
+            }
+            KindExpr::Unary(unary) => {
+                self.collect_inference_requirements(&unary.right, inferable, shadow_stack, requirements);
+                if let KindExpr::Variable(var) = &unary.right.kind
+                    && inferable.contains(&var.name)
+                    && !is_shadowed(&var.name, shadow_stack)
+                {
+                    let ty = match unary.operator {
+                        UnaryOperator::Negate => SemanticType::Number,
+                        UnaryOperator::Not => SemanticType::Boolean,
+                    };
+                    record_concrete(requirements, &var.name, ty, &mut self.diagnostics, expr.span);
+                }
+            }
+            KindExpr::Call(call) => {
+                self.collect_inference_requirements(&call.callee, inferable, shadow_stack, requirements);
+                for arg in &call.arguments {
+                    self.collect_inference_requirements(arg, inferable, shadow_stack, requirements);
+                }
+
+                if let KindExpr::MemberAccess(member) = &call.callee.kind
+                    && let KindExpr::Variable(var) = &member.object.kind
+                    && inferable.contains(&var.name)
+                    && !is_shadowed(&var.name, shadow_stack)
+                {
+                    requirements.entry(var.name.clone()).or_default().methods.insert(member.field.clone(), call.arguments.len());
+                } else if let KindExpr::Variable(var) = &call.callee.kind
+                    && inferable.contains(&var.name)
+                    && !is_shadowed(&var.name, shadow_stack)
+                {
+                    requirements.entry(var.name.clone()).or_default().requires_function = Some(call.arguments.len());
+                }
+            }
+            KindExpr::BaseCall(base_call) => {
+                for arg in &base_call.arguments {
+                    self.collect_inference_requirements(arg, inferable, shadow_stack, requirements);
+                }
+            }
+            KindExpr::MacroCall(macr) => {
+                for arg in &macr.arguments {
+                    self.collect_inference_requirements(&arg.value, inferable, shadow_stack, requirements);
+                }
+                if let Some(action) = &macr.action {
+                    self.collect_inference_requirements(action, inferable, shadow_stack, requirements);
+                }
+            }
+            KindExpr::Let(let_expr) => {
+                for binding in &let_expr.bindings {
+                    self.collect_inference_requirements(&binding.initializer, inferable, shadow_stack, requirements);
+                    let mut scope = HashSet::new();
+                    scope.insert(binding.name.clone());
+                    shadow_stack.push(scope);
+                }
+                self.collect_inference_requirements(&let_expr.body, inferable, shadow_stack, requirements);
+                for _ in &let_expr.bindings {
+                    shadow_stack.pop();
+                }
+            }
+            KindExpr::Block(block) => {
+                for expr in &block.expressions {
+                    self.collect_inference_requirements(expr, inferable, shadow_stack, requirements);
+                }
+            }
+            KindExpr::If(if_expr) => {
+                self.collect_inference_requirements(&if_expr.condition, inferable, shadow_stack, requirements);
+                self.collect_inference_requirements(&if_expr.then_branch, inferable, shadow_stack, requirements);
+                for (cond, body) in &if_expr.elif_branches {
+                    self.collect_inference_requirements(cond, inferable, shadow_stack, requirements);
+                    self.collect_inference_requirements(body, inferable, shadow_stack, requirements);
+                }
+                self.collect_inference_requirements(&if_expr.else_branch, inferable, shadow_stack, requirements);
+            }
+            KindExpr::While(while_expr) => {
+                self.collect_inference_requirements(&while_expr.condition, inferable, shadow_stack, requirements);
+                self.collect_inference_requirements(&while_expr.body, inferable, shadow_stack, requirements);
+            }
+            KindExpr::For(for_expr) => {
+                self.collect_inference_requirements(&for_expr.iterable, inferable, shadow_stack, requirements);
+                let mut scope = HashSet::new();
+                scope.insert(for_expr.variable.clone());
+                shadow_stack.push(scope);
+                self.collect_inference_requirements(&for_expr.body, inferable, shadow_stack, requirements);
+                shadow_stack.pop();
+            }
+            KindExpr::Assign(assign) => {
+                self.collect_inference_requirements(&assign.target, inferable, shadow_stack, requirements);
+                self.collect_inference_requirements(&assign.value, inferable, shadow_stack, requirements);
+                if let KindExpr::Variable(var) = &assign.target.kind
+                    && inferable.contains(&var.name)
+                    && !is_shadowed(&var.name, shadow_stack)
+                {
+                    let value_ty = match &assign.value.kind {
+                        KindExpr::Literal(lit) => match lit.value {
+                            LiteralValue::Number(_) => SemanticType::Number,
+                            LiteralValue::String(_) => SemanticType::String,
+                            LiteralValue::Bool(_) => SemanticType::Boolean,
+                        },
+                        _ => SemanticType::Unknown,
+                    };
+                    record_concrete(requirements, &var.name, value_ty, &mut self.diagnostics, expr.span);
+                }
+            }
+            KindExpr::MemberAccess(member) => {
+                self.collect_inference_requirements(&member.object, inferable, shadow_stack, requirements);
+            }
+            KindExpr::Index(index) => {
+                self.collect_inference_requirements(&index.object, inferable, shadow_stack, requirements);
+                self.collect_inference_requirements(&index.index, inferable, shadow_stack, requirements);
+                if let KindExpr::Variable(var) = &index.object.kind
+                    && inferable.contains(&var.name)
+                    && !is_shadowed(&var.name, shadow_stack)
+                {
+                    requirements.entry(var.name.clone()).or_default().requires_vector = true;
+                }
+            }
+            KindExpr::Array(array) => {
+                for element in &array.elements {
+                    self.collect_inference_requirements(element, inferable, shadow_stack, requirements);
+                }
+            }
+            KindExpr::ArrayComprehension(comp) => {
+                self.collect_inference_requirements(&comp.iterable, inferable, shadow_stack, requirements);
+                let mut scope = HashSet::new();
+                scope.insert(comp.variable.clone());
+                shadow_stack.push(scope);
+                self.collect_inference_requirements(&comp.element, inferable, shadow_stack, requirements);
+                shadow_stack.pop();
+            }
+            KindExpr::Lambda(lambda) => {
+                for param in &lambda.params {
+                    let mut scope = HashSet::new();
+                    scope.insert(param.name.clone());
+                    shadow_stack.push(scope);
+                }
+                self.collect_inference_requirements(&lambda.body, inferable, shadow_stack, requirements);
+                for _ in &lambda.params {
+                    shadow_stack.pop();
+                }
+            }
+            KindExpr::New(new_expr) => {
+                for arg in &new_expr.arguments {
+                    self.collect_inference_requirements(arg, inferable, shadow_stack, requirements);
+                }
+            }
+            KindExpr::Is(is_expr) => {
+                self.collect_inference_requirements(&is_expr.expression, inferable, shadow_stack, requirements);
+            }
+            KindExpr::As(as_expr) => {
+                self.collect_inference_requirements(&as_expr.expression, inferable, shadow_stack, requirements);
+            }
+            KindExpr::Match(match_expr) => {
+                self.collect_inference_requirements(&match_expr.expression, inferable, shadow_stack, requirements);
+                for case in &match_expr.cases {
+                    self.collect_inference_requirements(&case.body, inferable, shadow_stack, requirements);
+                }
+            }
+        }
+    }
+
+    fn synthesize_inferred_type(
+        &mut self,
+        symbol_name: &str,
+        req: SymbolRequirements,
+        span: Span,
+    ) -> SemanticType {
+        if req.requires_vector {
+            if let Some(concrete) = req.concrete.clone() {
+                if !matches!(concrete, SemanticType::Vector(_)) {
+                    self.diagnostics.error(
+                        format!(
+                            "La inferencia de {} requiere vector, pero se obtuvo {}",
+                            symbol_name, concrete
+                        ),
+                        span,
+                    );
+                }
+                return concrete;
+            }
+            return SemanticType::Vector(Box::new(SemanticType::Unknown));
+        }
+
+        if let Some(arity) = req.requires_function {
+            let inferred = SemanticType::Function(
+                vec![SemanticType::Unknown; arity],
+                Box::new(SemanticType::Unknown),
+            );
+            if let Some(concrete) = req.concrete.clone() {
+                if !matches!(concrete, SemanticType::Function(_, _)) {
+                    self.diagnostics.error(
+                        format!(
+                            "La inferencia de {} requiere funcion, pero se obtuvo {}",
+                            symbol_name, concrete
+                        ),
+                        span,
+                    );
+                }
+                return concrete;
+            }
+            return inferred;
+        }
+
+        if !req.methods.is_empty() {
+            let protocol_name = self.next_synthetic_protocol_name();
+            let mut methods = HashMap::new();
+            for (method_name, arity) in req.methods {
+                methods.insert(
+                    method_name,
+                    SemanticType::Function(
+                        vec![SemanticType::Unknown; arity],
+                        Box::new(SemanticType::Unknown),
+                    ),
+                );
+            }
+
+            self.symbols.define(Symbol {
+                name: protocol_name.clone(),
+                kind: SymbolKind::Protocol,
+                typ: SemanticType::Custom(protocol_name.clone()),
+            });
+            self.protocol_shapes.insert(
+                protocol_name.clone(),
+                ProtocolShape {
+                    methods,
+                    parent: None,
+                },
+            );
+
+            if let Some(concrete) = req.concrete.clone() {
+                match &concrete {
+                    SemanticType::Custom(type_name) => {
+                        if self.type_conforms_to_protocol(type_name, &protocol_name) {
+                            return concrete;
+                        }
+                        self.diagnostics.error(
+                            format!(
+                                "El simbolo {} no cumple el protocolo sintetico {}",
+                                symbol_name, protocol_name
+                            ),
+                            span,
+                        );
+                    }
+                    _ => {
+                        self.diagnostics.error(
+                            format!(
+                                "El simbolo {} no puede combinar usos estructurales con el tipo {}",
+                                symbol_name, concrete
+                            ),
+                            span,
+                        );
+                    }
+                }
+            }
+
+            return SemanticType::Custom(protocol_name);
+        }
+
+        req.concrete.unwrap_or(SemanticType::Unknown)
+    }
+
+    fn next_synthetic_protocol_name(&mut self) -> String {
+        self.synthetic_protocol_counter += 1;
+        format!("_P{}", self.synthetic_protocol_counter)
+    }
+
     fn check_expr(&mut self, expr: &Expr) -> SemanticType {
         let inferred = match &expr.kind {
             KindExpr::Literal(lit) => match lit.value {
@@ -408,6 +1160,11 @@ impl SemanticAnalyzer {
                 LiteralValue::Bool(_) => SemanticType::Boolean,
             },
             KindExpr::Variable(var) => {
+                if var.name == "self" && self.current_type_context.is_none() {
+                    self.diagnostics
+                        .error("'self' solo es valido dentro de metodos de tipo", expr.span);
+                    SemanticType::Unknown
+                } else
                 if let Some(symbol) = self.symbols.lookup(&var.name) {
                     let symbol_kind = symbol.kind;
                     let symbol_type = symbol.typ.clone();
@@ -484,7 +1241,7 @@ impl SemanticAnalyzer {
                     SemanticType::Unknown
                 }
             }
-            KindExpr::BaseCall(_) => SemanticType::Unknown,
+            KindExpr::BaseCall(call) => self.check_base_call(call, expr.span),
             KindExpr::MacroCall(call) => {
                 if self.symbols.lookup(&call.name).is_none() {
                     self.diagnostics.error(
@@ -502,6 +1259,13 @@ impl SemanticAnalyzer {
             }
             KindExpr::Let(let_expr) => {
                 self.enter_scope();
+                let body_inferable = let_expr
+                    .bindings
+                    .iter()
+                    .filter(|binding| binding.types.is_none())
+                    .map(|binding| binding.name.clone())
+                    .collect::<HashSet<_>>();
+
                 for binding in &let_expr.bindings {
                     let initializer_guaranteed = self.guarantees_value(&binding.initializer);
                     if !initializer_guaranteed {
@@ -517,7 +1281,26 @@ impl SemanticAnalyzer {
                     let init_ty = self.check_expr(&binding.initializer);
                     let declared =
                         self.resolve_type_ref(binding.types.as_ref(), binding.initializer.span);
-                    if !self.is_compatible_type(&declared, &init_ty) {
+                    let final_ty = if binding.types.is_none() && matches!(init_ty, SemanticType::Unknown) {
+                        let mut requirements: HashMap<String, SymbolRequirements> = HashMap::new();
+                        self.collect_inference_requirements(
+                            &let_expr.body,
+                            &body_inferable,
+                            &mut Vec::new(),
+                            &mut requirements,
+                        );
+                        self.synthesize_inferred_type(
+                            &binding.name,
+                            requirements.remove(&binding.name).unwrap_or_default(),
+                            binding.initializer.span,
+                        )
+                    } else if matches!(declared, SemanticType::Unknown) {
+                        init_ty.clone()
+                    } else {
+                        declared.clone()
+                    };
+
+                    if binding.types.is_some() && !self.is_compatible_type(&declared, &init_ty) {
                         self.diagnostics.error(
                             format!(
                                 "Binding {} incompatible: se esperaba {}, se obtuvo {}",
@@ -526,15 +1309,10 @@ impl SemanticAnalyzer {
                             binding.initializer.span,
                         );
                     }
-                    let stored = if matches!(declared, SemanticType::Unknown) {
-                        init_ty
-                    } else {
-                        declared
-                    };
                     self.define_local_with_state(
                         &binding.name,
                         SymbolKind::Variable,
-                        stored,
+                        final_ty,
                         binding.initializer.span,
                         initializer_guaranteed,
                     );
@@ -546,13 +1324,25 @@ impl SemanticAnalyzer {
             KindExpr::Block(block) => {
                 self.enter_scope();
                 let mut last = SemanticType::Unknown;
+                let mut found_non_terminating = false;
                 for sub in &block.expressions {
+                    if found_non_terminating {
+                        self.diagnostics.error(
+                            "Expresion inalcanzable: hay una expresion previa que no termina",
+                            sub.span,
+                        );
+                    }
                     last = self.check_expr(sub);
+                    if self.definitely_non_terminating(sub) {
+                        found_non_terminating = true;
+                    }
                 }
                 self.exit_scope();
                 last
             }
             KindExpr::If(if_expr) => {
+                self.report_unreachable_if_branches(if_expr, expr.span);
+
                 let state_before_if = self.assigned_scopes.clone();
                 self.assigned_scopes = state_before_if.clone();
                 let cond_ty = self.check_expr(&if_expr.condition);
@@ -611,6 +1401,12 @@ impl SemanticAnalyzer {
             }
             KindExpr::While(while_expr) => {
                 let min_iterations = self.while_min_iterations(&while_expr.condition);
+                if matches!(min_iterations, Some(0)) {
+                    self.diagnostics.error(
+                        "Cuerpo de while inalcanzable: la condicion es siempre false",
+                        while_expr.body.span,
+                    );
+                }
                 let cond_ty = self.check_expr(&while_expr.condition);
                 self.expect_type(expr.span, &cond_ty, &SemanticType::Boolean, "condicion de while");
                 let state_after_condition_eval = self.assigned_scopes.clone();
@@ -643,9 +1439,29 @@ impl SemanticAnalyzer {
 
                 let element_ty = match iterable_ty {
                     SemanticType::Vector(inner) => *inner,
+                    SemanticType::Custom(ref type_name) => {
+                        // Check if the type conforms to Iterable protocol
+                        if self.type_conforms_to_protocol(type_name, "Iterable") {
+                            // For now, assume element type is Unknown for custom iterables
+                            // In the future, this could be refined to extract the element type from the protocol
+                            SemanticType::Unknown
+                        } else {
+                            self.diagnostics.error(
+                                format!(
+                                    "El for requiere un vector o un tipo que implemente el protocolo Iterable, se obtuvo {}",
+                                    iterable_ty
+                                ),
+                                expr.span,
+                            );
+                            SemanticType::Unknown
+                        }
+                    }
                     other => {
                         self.diagnostics.error(
-                            format!("El for requiere iterable vectorial, se obtuvo {}", other),
+                            format!(
+                                "El for requiere un vector o un tipo que implemente el protocolo Iterable, se obtuvo {}",
+                                other
+                            ),
                             expr.span,
                         );
                         SemanticType::Unknown
@@ -657,6 +1473,7 @@ impl SemanticAnalyzer {
                     self.assigned_scopes = loop_state.clone();
                     self.enter_scope();
                     self.define_local(&for_expr.variable, SymbolKind::Variable, element_ty.clone(), expr.span);
+                    self.mark_local_readonly(&for_expr.variable, "iterador de for");
                     self.check_expr(&for_expr.body);
                     self.exit_scope();
                     let next_state = self.assigned_scopes.clone();
@@ -705,7 +1522,14 @@ impl SemanticAnalyzer {
                 }
 
                 if let KindExpr::Variable(var) = &assign.target.kind {
-                    self.mark_assigned(&var.name);
+                    if let Some(reason) = self.readonly_reason(&var.name) {
+                        self.diagnostics.error(
+                            format!("No se puede asignar a {}: {}", var.name, reason),
+                            assign.target.span,
+                        );
+                    } else {
+                        self.mark_assigned(&var.name);
+                    }
                 }
                 target_ty
             }
@@ -1058,6 +1882,7 @@ impl SemanticAnalyzer {
                 };
 
                 self.define_local(name, SymbolKind::Variable, bound_type.clone(), span);
+                self.mark_local_readonly(name, "binding de patron de match");
 
                 if let Some(scrutinee_name) = scrutinee_name
                     && scrutinee_name != name
@@ -1068,6 +1893,7 @@ impl SemanticAnalyzer {
                         bound_type,
                         span,
                     );
+                    self.mark_local_readonly(scrutinee_name, "binding estrechado de match");
                 }
             }
             Pattern::Binary { left, right, .. } => {
@@ -1525,6 +2351,100 @@ impl SemanticAnalyzer {
         self.check_expr(target)
     }
 
+    fn check_base_call(&mut self, call: &BaseCallExpr, span: Span) -> SemanticType {
+        let Some(type_name) = self.current_type_context.clone() else {
+            self.diagnostics
+                .error("'base(...)' solo es valido dentro de metodos de tipo", span);
+            for arg in &call.arguments {
+                self.check_expr(arg);
+            }
+            return SemanticType::Unknown;
+        };
+
+        let Some(method_name) = self.current_method_context.clone() else {
+            self.diagnostics
+                .error("'base(...)' solo es valido dentro del cuerpo de un metodo", span);
+            for arg in &call.arguments {
+                self.check_expr(arg);
+            }
+            return SemanticType::Unknown;
+        };
+
+        let has_parent = self
+            .type_shapes
+            .get(&type_name)
+            .and_then(|shape| shape.parent.as_ref())
+            .is_some();
+        if !has_parent {
+            self.diagnostics.error(
+                format!(
+                    "No se puede usar base(...) en {}.{}: el tipo no tiene padre",
+                    type_name, method_name
+                ),
+                span,
+            );
+            for arg in &call.arguments {
+                self.check_expr(arg);
+            }
+            return SemanticType::Unknown;
+        }
+
+        let arg_types = call
+            .arguments
+            .iter()
+            .map(|arg| self.check_expr(arg))
+            .collect::<Vec<_>>();
+
+        let Some(parent_signature) = self.lookup_member_type_in_parent_chain(&type_name, &method_name) else {
+            self.diagnostics.error(
+                format!(
+                    "No existe implementacion base para {}.{} en la jerarquia padre",
+                    type_name, method_name
+                ),
+                span,
+            );
+            return SemanticType::Unknown;
+        };
+
+        let SemanticType::Function(params, ret) = parent_signature else {
+            self.diagnostics.error(
+                format!(
+                    "El miembro base {}.{} no es invocable como metodo",
+                    type_name, method_name
+                ),
+                span,
+            );
+            return SemanticType::Unknown;
+        };
+
+        if params.len() != arg_types.len() {
+            self.diagnostics.error(
+                format!(
+                    "Aridad invalida en base(...): se esperaban {} argumentos y llegaron {}",
+                    params.len(),
+                    arg_types.len()
+                ),
+                span,
+            );
+        }
+
+        for (idx, (expected, actual)) in params.iter().zip(arg_types.iter()).enumerate() {
+            if !self.is_compatible_type(expected, actual) {
+                self.diagnostics.error(
+                    format!(
+                        "Argumento {} incompatible en base(...): se esperaba {}, se obtuvo {}",
+                        idx + 1,
+                        expected,
+                        actual
+                    ),
+                    span,
+                );
+            }
+        }
+
+        *ret
+    }
+
     fn lookup_member_type(&self, type_name: &str, member: &str) -> Option<SemanticType> {
         if let Some(signature) = self.lookup_protocol_member_type(type_name, member) {
             return Some(signature);
@@ -1590,6 +2510,12 @@ impl SemanticAnalyzer {
                     .return_type
                     .as_ref()
                     .map(SemanticType::from_type_ref)
+                    .or_else(|| {
+                        self.inferred_method_returns
+                            .get(&typ.name)
+                            .and_then(|methods| methods.get(&method.name))
+                            .cloned()
+                    })
                     .unwrap_or(SemanticType::Unknown),
             ),
         );
@@ -1616,6 +2542,154 @@ impl SemanticAnalyzer {
                     method.body.span,
                 );
             }
+        }
+    }
+
+    fn validate_parent_constructor_args(&mut self, typ: &TypeDecl, parent_name: &str, parent_shape: &TypeShape) {
+        if parent_shape.ctor_params.len() != typ.parent_arg.len() {
+            self.diagnostics.error(
+                format!(
+                    "Constructor de {} espera {} argumentos en la herencia de {}, pero se proporcionan {}",
+                    parent_name,
+                    parent_shape.ctor_params.len(),
+                    typ.name,
+                    typ.parent_arg.len()
+                ),
+                if let Some(expr) = typ.parent_arg.first() {
+                    expr.span
+                } else {
+                    self.type_decl_span(typ)
+                },
+            );
+        }
+
+        for (idx, (expected, arg_expr)) in parent_shape.ctor_params.iter().zip(typ.parent_arg.iter()).enumerate() {
+            let actual = self.check_expr(arg_expr);
+            if !self.is_compatible_type(expected, &actual) {
+                self.diagnostics.error(
+                    format!(
+                        "Argumento {} del constructor padre {} espera {}, pero recibe {}",
+                        idx + 1,
+                        parent_name,
+                        expected,
+                        actual
+                    ),
+                    arg_expr.span,
+                );
+                self.diagnostics.error(
+                    format!(
+                        "Constructor padre {} incompatible: argumento {} incompatible",
+                        parent_name,
+                        idx + 1
+                    ),
+                    arg_expr.span,
+                );
+            }
+        }
+    }
+
+    fn collect_self_member_accesses(&self, expr: &Expr, out: &mut Vec<String>) {
+        use KindExpr::*;
+        match &expr.kind {
+            MemberAccess(member) => {
+                if let KindExpr::Variable(var) = &member.object.kind {
+                    if var.name == "self" {
+                        out.push(member.field.clone());
+                        // still descend the object in case of chained accesses
+                        self.collect_self_member_accesses(&member.object, out);
+                        return;
+                    }
+                }
+                // descend into object and no further for field name
+                self.collect_self_member_accesses(&member.object, out);
+            }
+            Binary(b) => {
+                self.collect_self_member_accesses(&b.left, out);
+                self.collect_self_member_accesses(&b.right, out);
+            }
+            Unary(u) => {
+                self.collect_self_member_accesses(&u.right, out);
+            }
+            Call(c) => {
+                self.collect_self_member_accesses(&c.callee, out);
+                for a in &c.arguments {
+                    self.collect_self_member_accesses(a, out);
+                }
+            }
+            MacroCall(m) => {
+                for a in &m.arguments {
+                    self.collect_self_member_accesses(&a.value, out);
+                }
+                if let Some(action) = &m.action {
+                    self.collect_self_member_accesses(action, out);
+                }
+            }
+            Let(l) => {
+                for b in &l.bindings {
+                    self.collect_self_member_accesses(&b.initializer, out);
+                }
+                self.collect_self_member_accesses(&l.body, out);
+            }
+            Block(b) => {
+                for e in &b.expressions {
+                    self.collect_self_member_accesses(e, out);
+                }
+            }
+            If(i) => {
+                self.collect_self_member_accesses(&i.condition, out);
+                self.collect_self_member_accesses(&i.then_branch, out);
+                for (cond, body) in &i.elif_branches {
+                    self.collect_self_member_accesses(cond, out);
+                    self.collect_self_member_accesses(body, out);
+                }
+                self.collect_self_member_accesses(&i.else_branch, out);
+            }
+            While(w) => {
+                self.collect_self_member_accesses(&w.condition, out);
+                self.collect_self_member_accesses(&w.body, out);
+            }
+            For(f) => {
+                self.collect_self_member_accesses(&f.iterable, out);
+                self.collect_self_member_accesses(&f.body, out);
+            }
+            Assign(a) => {
+                self.collect_self_member_accesses(&a.target, out);
+                self.collect_self_member_accesses(&a.value, out);
+            }
+            Index(ix) => {
+                self.collect_self_member_accesses(&ix.object, out);
+                self.collect_self_member_accesses(&ix.index, out);
+            }
+            Array(arr) => {
+                for e in &arr.elements {
+                    self.collect_self_member_accesses(e, out);
+                }
+            }
+            ArrayComprehension(ac) => {
+                self.collect_self_member_accesses(&ac.iterable, out);
+                self.collect_self_member_accesses(&ac.element, out);
+            }
+            Lambda(lam) => {
+                self.collect_self_member_accesses(&lam.body, out);
+            }
+            New(n) => {
+                for a in &n.arguments {
+                    self.collect_self_member_accesses(a, out);
+                }
+            }
+            Is(is_e) => {
+                self.collect_self_member_accesses(&is_e.expression, out);
+            }
+            As(as_e) => {
+                self.collect_self_member_accesses(&as_e.expression, out);
+            }
+            Match(m) => {
+                self.collect_self_member_accesses(&m.expression, out);
+                for c in &m.cases {
+                    self.collect_self_member_accesses(&c.body, out);
+                }
+            }
+            Call(_) | BaseCall(_) | Literal(_) | Variable(_) => {}
         }
     }
 
@@ -1677,6 +2751,9 @@ impl SemanticAnalyzer {
             SemanticType::Number,
         );
         self.define_builtin_function("rand", vec![], SemanticType::Number);
+
+        // Predefined Iterable protocol
+        self.define_builtin_protocol("Iterable");
     }
 
     fn define_builtin_function(
@@ -1690,6 +2767,21 @@ impl SemanticAnalyzer {
             kind: SymbolKind::Function,
             typ: SemanticType::Function(params, Box::new(ret)),
         });
+    }
+
+    fn define_builtin_protocol(&mut self, name: &str) {
+        let _ = self.symbols.define(Symbol {
+            name: name.to_string(),
+            kind: SymbolKind::Protocol,
+            typ: SemanticType::Unknown,
+        });
+        self.protocol_shapes.insert(
+            name.to_string(),
+            ProtocolShape {
+                parent: None,
+                methods: HashMap::new(),
+            },
+        );
     }
 
     fn validate_hierarchies(&mut self) {
@@ -1782,12 +2874,16 @@ impl SemanticAnalyzer {
     fn enter_scope(&mut self) {
         self.symbols.enter_scope();
         self.assigned_scopes.push(HashMap::new());
+        self.readonly_scopes.push(HashMap::new());
     }
 
     fn exit_scope(&mut self) {
         self.symbols.exit_scope();
         if self.assigned_scopes.len() > 1 {
             self.assigned_scopes.pop();
+        }
+        if self.readonly_scopes.len() > 1 {
+            self.readonly_scopes.pop();
         }
     }
 
@@ -1799,12 +2895,115 @@ impl SemanticAnalyzer {
             .unwrap_or(true)
     }
 
+    fn collect_return_expressions<'a>(&self, expr: &'a Expr) -> Vec<&'a Expr> {
+        let mut returns = Vec::new();
+        self.collect_returns_helper(expr, &mut returns);
+        returns
+    }
+
+    fn collect_returns_helper<'a>(&self, expr: &'a Expr, returns: &mut Vec<&'a Expr>) {
+        match &expr.kind {
+            KindExpr::Block(block) => {
+                if block.expressions.is_empty() {
+                    returns.push(expr);
+                } else {
+                    // The return type is determined by the last expression in the block
+                    self.collect_returns_helper(&block.expressions[block.expressions.len() - 1], returns);
+                }
+            }
+            KindExpr::If(if_expr) => {
+                // Collect returns from all branches
+                self.collect_returns_helper(&if_expr.then_branch, returns);
+                for (_, body) in &if_expr.elif_branches {
+                    self.collect_returns_helper(body, returns);
+                }
+                self.collect_returns_helper(&if_expr.else_branch, returns);
+            }
+            KindExpr::Let(let_expr) => {
+                // The return type is determined by the body of the let expression
+                self.collect_returns_helper(&let_expr.body, returns);
+            }
+            KindExpr::Match(match_expr) => {
+                // Collect returns from all match cases
+                for case in &match_expr.cases {
+                    self.collect_returns_helper(&case.body, returns);
+                }
+            }
+            _ => {
+                // Base case: this is the return expression
+                returns.push(expr);
+            }
+        }
+    }
+
+    fn infer_return_type(&self, body: &Expr, _span: Span) -> SemanticType {
+        let return_exprs = self.collect_return_expressions(body);
+
+        if return_exprs.is_empty() {
+            return SemanticType::Unknown;
+        }
+
+        // Collect types from all return expressions
+        let mut return_types = Vec::new();
+        for ret_expr in return_exprs {
+            match &ret_expr.kind {
+                KindExpr::Literal(lit) => match lit.value {
+                    LiteralValue::Number(_) => return_types.push(SemanticType::Number),
+                    LiteralValue::String(_) => return_types.push(SemanticType::String),
+                    LiteralValue::Bool(_) => return_types.push(SemanticType::Boolean),
+                },
+                KindExpr::Block(block) if block.expressions.is_empty() => {
+                    return_types.push(SemanticType::Boolean); // Empty block evaluates to false
+                }
+                KindExpr::Array(_) => return_types.push(SemanticType::Vector(Box::new(SemanticType::Unknown))),
+                _ => return_types.push(SemanticType::Unknown),
+            }
+        }
+
+        // Unify return types
+        if return_types.is_empty() {
+            return SemanticType::Unknown;
+        }
+
+        let first = return_types[0].clone();
+        let all_same = return_types.iter().all(|t| {
+            match (t, &first) {
+                (SemanticType::Number, SemanticType::Number) => true,
+                (SemanticType::String, SemanticType::String) => true,
+                (SemanticType::Boolean, SemanticType::Boolean) => true,
+                (SemanticType::Vector(_), SemanticType::Vector(_)) => true,
+                (SemanticType::Unknown, _) => true,
+                (_, SemanticType::Unknown) => true,
+                _ => false,
+            }
+        });
+
+        if all_same {
+            first
+        } else {
+            SemanticType::Unknown
+        }
+    }
+
     fn mark_assigned(&mut self, name: &str) {
         for scope in self.assigned_scopes.iter_mut().rev() {
             if let Some(state) = scope.get_mut(name) {
                 *state = true;
                 return;
             }
+        }
+    }
+
+    fn readonly_reason(&self, name: &str) -> Option<&str> {
+        self.readonly_scopes
+            .iter()
+            .rev()
+            .find_map(|scope| scope.get(name).map(String::as_str))
+    }
+
+    fn mark_local_readonly(&mut self, name: &str, reason: impl Into<String>) {
+        if let Some(scope) = self.readonly_scopes.last_mut() {
+            scope.insert(name.to_string(), reason.into());
         }
     }
 
@@ -2004,6 +3203,127 @@ impl SemanticAnalyzer {
         }
     }
 
+    fn report_unreachable_if_branches(&mut self, if_expr: &IfExpr, span: Span) {
+        match self.eval_const_bool(&if_expr.condition) {
+            Some(true) => {
+                for (_, elif_body) in &if_expr.elif_branches {
+                    self.diagnostics.error(
+                        "Rama elif inalcanzable: la condicion del if es siempre true",
+                        elif_body.span,
+                    );
+                }
+                self.diagnostics.error(
+                    "Rama else inalcanzable: la condicion del if es siempre true",
+                    if_expr.else_branch.span,
+                );
+                return;
+            }
+            Some(false) => {
+                self.diagnostics.error(
+                    "Rama then inalcanzable: la condicion del if es siempre false",
+                    if_expr.then_branch.span,
+                );
+            }
+            None => {}
+        }
+
+        let mut branch_already_taken = false;
+        for (elif_cond, elif_body) in &if_expr.elif_branches {
+            if branch_already_taken {
+                self.diagnostics.error(
+                    "Rama elif inalcanzable: hay una rama previa siempre verdadera",
+                    elif_body.span,
+                );
+                continue;
+            }
+
+            if let Some(true) = self.eval_const_bool(elif_cond) {
+                branch_already_taken = true;
+            }
+        }
+
+        if branch_already_taken {
+            self.diagnostics.error(
+                "Rama else inalcanzable: hay una rama previa siempre verdadera",
+                if_expr.else_branch.span,
+            );
+        }
+
+        let _ = span;
+    }
+
+    fn definitely_non_terminating(&self, expr: &Expr) -> bool {
+        match &expr.kind {
+            KindExpr::While(while_expr) => matches!(self.eval_const_bool(&while_expr.condition), Some(true)),
+            KindExpr::Block(block) => {
+                for sub in &block.expressions {
+                    if self.definitely_non_terminating(sub) {
+                        return true;
+                    }
+                }
+                false
+            }
+            KindExpr::If(if_expr) => {
+                if let Some(cond) = self.eval_const_bool(&if_expr.condition) {
+                    if cond {
+                        return self.definitely_non_terminating(&if_expr.then_branch);
+                    }
+
+                    for (elif_cond, elif_body) in &if_expr.elif_branches {
+                        match self.eval_const_bool(elif_cond) {
+                            Some(false) => continue,
+                            Some(true) => return self.definitely_non_terminating(elif_body),
+                            None => return false,
+                        }
+                    }
+
+                    return self.definitely_non_terminating(&if_expr.else_branch);
+                }
+
+                self.definitely_non_terminating(&if_expr.then_branch)
+                    && if_expr
+                        .elif_branches
+                        .iter()
+                        .all(|(_, body)| self.definitely_non_terminating(body))
+                    && self.definitely_non_terminating(&if_expr.else_branch)
+            }
+            KindExpr::Match(match_expr) => {
+                if match_expr.cases.is_empty() {
+                    return false;
+                }
+
+                let all_non_terminating = match_expr
+                    .cases
+                    .iter()
+                    .all(|case| self.definitely_non_terminating(&case.body));
+                if !all_non_terminating {
+                    return false;
+                }
+
+                if match_expr
+                    .cases
+                    .iter()
+                    .any(|case| matches!(case.pattern, Pattern::Default))
+                {
+                    return true;
+                }
+
+                let mut saw_true = false;
+                let mut saw_false = false;
+                for case in &match_expr.cases {
+                    match case.pattern {
+                        Pattern::Literal(LiteralValue::Bool(true)) => saw_true = true,
+                        Pattern::Literal(LiteralValue::Bool(false)) => saw_false = true,
+                        _ => {}
+                    }
+                }
+
+                saw_true && saw_false
+            }
+            _ => false,
+        }
+    }
+
     fn define_symbol(&mut self, name: &str, kind: SymbolKind, typ: SemanticType) {
         let symbol = Symbol {
             name: name.to_string(),
@@ -2031,6 +3351,14 @@ impl SemanticAnalyzer {
         span: Span,
         is_assigned: bool,
     ) {
+        // warn if this definition shadows a symbol in an outer scope
+        if let Some(existing) = self.symbols.lookup(name) {
+            self.diagnostics.warning(
+                format!("Sombra de simbolo: '{}' oculta un simbolo externo de tipo {:?}", name, existing.kind),
+                span,
+            );
+        }
+
         let symbol = Symbol {
             name: name.to_string(),
             kind,

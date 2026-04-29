@@ -58,4 +58,15 @@ impl SymbolTable {
             .rev()
             .find_map(|scope| scope.get(name))
     }
+
+    pub fn update_type(&mut self, name: &str, typ: SemanticType) -> bool {
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(symbol) = scope.get_mut(name) {
+                symbol.typ = typ;
+                return true;
+            }
+        }
+
+        false
+    }
 }

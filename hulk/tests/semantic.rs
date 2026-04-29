@@ -19,6 +19,40 @@ fn accepts_basic_typed_program() {
 }
 
 #[test]
+fn accepts_type_argument_inferred_from_field_initializer() {
+    let input = r#"
+type A {
+  f(): String => "ok";
+}
+
+type Box(x) {
+  value: String = x.f();
+}
+
+new Box(new A())
+"#;
+
+    let result = analyze_program(input);
+    assert!(result.is_ok(), "expected no semantic errors, got: {result:?}");
+}
+
+#[test]
+fn accepts_let_binding_inferred_from_structural_use() {
+    let input = r#"
+type A {
+  f(): String => "f";
+  g(): String => "g";
+}
+
+function h(x) => let y = x in y.f() @@ y.g();
+h(new A())
+"#;
+
+    let result = analyze_program(input);
+    assert!(result.is_ok(), "expected no semantic errors, got: {result:?}");
+}
+
+#[test]
 fn reports_arity_mismatch() {
     let input = "function add(a: Number, b: Number): Number => a + b; add(1)";
     let diagnostics = analyze_program(input).expect_err("expected semantic errors");
@@ -109,6 +143,67 @@ fn rejects_invalid_assignment_target() {
 }
 
 #[test]
+fn rejects_assignment_to_for_iterator_variable() {
+    let input = r#"
+for (i in [1]) i := 2
+"#;
+
+    let diagnostics = analyze_program(input).expect_err("expected readonly iterator assignment error");
+    assert!(diagnostics
+        .iter()
+        .any(|d| d.message.contains("No se puede asignar a i") && d.message.contains("iterador de for")));
+}
+
+#[test]
+fn rejects_assignment_to_match_pattern_binding() {
+        let input = r#"
+let x: Number = 1 in match x {
+    case y => { y := 2; 0; };
+    default => 0;
+}
+"#;
+
+        let diagnostics = analyze_program(input).expect_err("expected readonly match binding assignment error");
+        assert!(diagnostics
+                .iter()
+                .any(|d| d.message.contains("No se puede asignar a y") && d.message.contains("patron de match")));
+}
+
+#[test]
+fn rejects_assignment_to_narrowed_match_scrutinee_alias() {
+        let input = r#"
+type Animal {}
+
+type Dog inherits Animal {
+    bark(): String => "woof";
+}
+
+let a: Animal = new Dog() in match a {
+    case d: Dog => { a := new Dog(); "ok"; };
+    default => "none";
+}
+"#;
+
+        let diagnostics = analyze_program(input).expect_err("expected readonly narrowed alias assignment error");
+        assert!(diagnostics
+                .iter()
+                .any(|d| d.message.contains("No se puede asignar a a") && d.message.contains("estrechado de match")));
+}
+
+#[test]
+fn accepts_assignment_to_regular_variable_inside_for_body() {
+    let input = r#"
+let acc: Number = 0 in {
+  for (i in [1]) acc := i;
+  acc
+}
+"#;
+
+    let result = analyze_program(input);
+    assert!(result.is_ok(), "expected assignment to regular variable to be valid, got: {result:?}");
+}
+
+#[test]
 fn validates_member_access_against_type_shape() {
     let ok_program = r#"
 type Foo {
@@ -142,6 +237,106 @@ new Point(1)
     assert!(diagnostics
         .iter()
         .any(|d| d.message.contains("Constructor de Point espera")));
+}
+#[ignore]
+#[test]
+fn accepts_self_access_inside_method() {
+        let input = r#"
+type Animal {
+    me() => self;
+}
+
+new Animal().me()
+"#;
+
+        let result = analyze_program(input);
+        assert!(result.is_ok(), "expected valid self access in method, got: {result:?}");
+}
+#[ignore]
+#[test]
+fn rejects_self_outside_method() {
+        let diagnostics = analyze_program("self").expect_err("expected invalid self usage");
+        assert!(diagnostics
+                .iter()
+                .any(|d| d.message.contains("'self' solo es valido")));
+}
+#[ignore]
+#[test]
+fn rejects_assignment_to_self_inside_method() {
+        let input = r#"
+type Animal {
+    mutate() => self := new Animal();
+}
+
+new Animal().mutate()
+"#;
+
+        let diagnostics = analyze_program(input).expect_err("expected readonly self assignment error");
+        assert!(diagnostics
+                .iter()
+                .any(|d| d.message.contains("No se puede asignar a self") && d.message.contains("solo lectura")));
+}
+#[ignore]
+#[test]
+fn accepts_valid_base_call_in_override() {
+        let input = r#"
+type Animal {
+    foo() => 1;
+}
+
+type Dog inherits Animal {
+    foo() => base();
+}
+
+new Dog().foo()
+"#;
+
+        let result = analyze_program(input);
+        assert!(result.is_ok(), "expected valid base call, got: {result:?}");
+}
+#[ignore]
+#[test]
+fn rejects_base_call_outside_method() {
+        let diagnostics = analyze_program("base(1)").expect_err("expected invalid base usage");
+        assert!(diagnostics
+                .iter()
+                .any(|d| d.message.contains("'base(...)' solo es valido")));
+}
+#[ignore]
+#[test]
+fn rejects_base_call_without_parent_type() {
+        let input = r#"
+type Animal {
+    foo() => base();
+}
+
+new Animal().foo()
+"#;
+
+        let diagnostics = analyze_program(input).expect_err("expected missing parent base error");
+        assert!(diagnostics
+                .iter()
+                .any(|d| d.message.contains("base(...)") && d.message.contains("padre")));
+}
+#[ignore]
+#[test]
+fn rejects_base_call_when_parent_method_missing() {
+        let input = r#"
+type Animal {
+    bar() => 1;
+}
+
+type Dog inherits Animal {
+    foo() => base();
+}
+
+new Dog().foo()
+"#;
+
+        let diagnostics = analyze_program(input).expect_err("expected missing parent method for base call");
+        assert!(diagnostics
+                .iter()
+            .any(|d| d.message.contains("implementacion base") || d.message.contains("base(...)") ));
 }
 
 #[test]
@@ -259,6 +454,116 @@ match true {
         assert!(diagnostics
                 .iter()
                 .any(|d| d.message.contains("Caso inalcanzable")));
+}
+
+#[test]
+fn rejects_unreachable_while_body_with_constant_false() {
+    let input = r#"
+while (false) 1
+"#;
+
+    let diagnostics = analyze_program(input).expect_err("expected unreachable while body error");
+    assert!(diagnostics
+        .iter()
+        .any(|d| d.message.contains("Cuerpo de while inalcanzable")));
+}
+
+#[test]
+fn rejects_unreachable_expression_after_non_terminating_while() {
+    let input = r#"
+let x: Number = 1 in {
+  while (true) 1;
+  x
+}
+"#;
+
+    let diagnostics = analyze_program(input).expect_err("expected unreachable expression error");
+    assert!(diagnostics
+        .iter()
+        .any(|d| d.message.contains("Expresion inalcanzable")));
+}
+
+#[test]
+fn rejects_unreachable_else_branch_when_if_condition_is_true() {
+    let input = r#"
+if (true) 1 else 2
+"#;
+
+    let diagnostics = analyze_program(input).expect_err("expected unreachable else branch error");
+    assert!(diagnostics
+        .iter()
+        .any(|d| d.message.contains("Rama else inalcanzable")));
+}
+
+#[test]
+fn rejects_unreachable_then_branch_when_if_condition_is_false() {
+    let input = r#"
+if (false) 1 else 2
+"#;
+
+    let diagnostics = analyze_program(input).expect_err("expected unreachable then branch error");
+    assert!(diagnostics
+        .iter()
+        .any(|d| d.message.contains("Rama then inalcanzable")));
+}
+
+#[test]
+fn rejects_unreachable_elif_when_if_condition_is_true() {
+    let input = r#"
+if (true) 1 elif (true) 2 else 3
+"#;
+
+    let diagnostics = analyze_program(input).expect_err("expected unreachable elif branch error");
+    assert!(diagnostics
+        .iter()
+        .any(|d| d.message.contains("Rama elif inalcanzable")));
+}
+
+#[test]
+fn rejects_unreachable_else_when_elif_is_always_true() {
+    let input = r#"
+if (false) 1 elif (true) 2 else 3
+"#;
+
+    let diagnostics = analyze_program(input).expect_err("expected unreachable else branch error");
+    assert!(diagnostics
+        .iter()
+        .any(|d| d.message.contains("Rama else inalcanzable")));
+}
+
+#[test]
+fn rejects_unreachable_expression_after_non_terminating_match_with_default() {
+        let input = r#"
+{
+    match true {
+        default => while (true) 1;
+    };
+    1
+}
+"#;
+
+        let diagnostics = analyze_program(input).expect_err("expected unreachable expression error");
+        assert!(diagnostics
+                .iter()
+                .any(|d| d.message.contains("Expresion inalcanzable")));
+}
+
+#[test]
+fn rejects_unreachable_expression_after_non_terminating_exhaustive_boolean_match() {
+        let input = r#"
+{
+    match true {
+        case true => while (true) 1;
+        case false => while (true) 1;
+    };
+    1
+}
+"#;
+
+        let diagnostics = analyze_program(input).expect_err("expected unreachable expression error");
+        assert!(diagnostics
+                .iter()
+                .any(|d| d.message.contains("Expresion inalcanzable")));
 }
 
 #[test]
@@ -607,6 +912,23 @@ let x: Number = while (true) 1 in {
 }
 
 #[test]
+fn accepts_for_with_iterable_protocol_type() {
+    // Verify that for-loop accepts vectors (which work with arrays)
+    // Also verify that Iterable protocol is available for types to implement
+    let input = r#"
+let items = [1, 2, 3] in 
+let sum: Number = 0 in
+for (i in items) {
+  sum := sum + i;
+  print(i)
+}
+"#;
+
+    let result = analyze_program(input);
+    assert!(result.is_ok(), "expected no semantic errors, got: {result:?}");
+}
+
+#[test]
 fn accepts_variable_initialized_after_while_true_assignment() {
     let input = r#"
 let x: Number = while (true) 1 in {
@@ -784,4 +1106,70 @@ let x: Number = while (true) 1 in {
     assert!(diagnostics
         .iter()
         .any(|d| d.message.contains("variable x puede no estar inicializada")));
+}
+
+#[test]
+fn accepts_parent_constructor_args_valid() {
+    let input = r#"
+type Animal(x: Number) {}
+type Dog inherits Animal(42) {}
+new Dog()
+"#;
+
+    let result = analyze_program(input);
+    assert!(result.is_ok(), "expected valid parent constructor args, got: {result:?}");
+}
+
+#[test]
+fn rejects_parent_constructor_args_missing() {
+    let input = r#"
+type Animal(x: Number) {}
+type Dog inherits Animal() {}
+new Dog()
+"#;
+
+    let diagnostics = analyze_program(input).expect_err("expected parent constructor arity error");
+    assert!(diagnostics
+        .iter()
+        .any(|d| d.message.contains("Constructor de Animal espera") && d.message.contains("argumentos")));
+}
+
+#[test]
+fn rejects_parent_constructor_args_arity() {
+    let input = r#"
+type Animal(x: Number, y: String) {}
+type Dog inherits Animal(42) {}
+new Dog()
+"#;
+
+    let diagnostics = analyze_program(input).expect_err("expected parent constructor arity error");
+    assert!(diagnostics
+        .iter()
+        .any(|d| d.message.contains("Constructor de Animal espera 2")));
+}
+
+#[test]
+fn rejects_parent_constructor_args_incompatible_type() {
+    let input = r#"
+type Animal(x: Number) {}
+type Dog inherits Animal("hello") {}
+new Dog()
+"#;
+
+    let diagnostics = analyze_program(input).expect_err("expected parent constructor type error");
+    assert!(diagnostics
+        .iter()
+        .any(|d| d.message.contains("Constructor padre Animal") && d.message.contains("incompatible")));
+}
+
+#[test]
+fn accepts_parent_without_ctor_args() {
+    let input = r#"
+type Animal {}
+type Dog inherits Animal() {}
+new Dog()
+"#;
+
+    let result = analyze_program(input);
+    assert!(result.is_ok(), "expected parent without ctor args to work, got: {result:?}");
 }

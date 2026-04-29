@@ -1,6 +1,7 @@
 pub mod ast;
 pub mod diagnostics;
 pub mod lexer;
+pub mod macro_expander;
 pub mod node_ids;
 pub mod semantic_analyzer;
 pub mod symbol_table;
@@ -89,7 +90,9 @@ pub fn parse_program(input: &str) -> Result<Program, Vec<Diagnostic>> {
             ),
         };
         vec![diagnostic]
-    }).map(|mut program| {
+    })
+    .and_then(macro_expander::expand_program)
+    .map(|mut program| {
         node_ids::assign_program_node_ids(&mut program);
         program
     })

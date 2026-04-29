@@ -24,6 +24,15 @@ impl Diagnostic {
         }
     }
 
+    pub fn warning(message: impl Into<String>, span: Span) -> Self {
+        Self {
+            level: DiagnosticLevel::Warning,
+            message: message.into(),
+            span,
+            hints: Vec::new(),
+        }
+    }
+
     pub fn with_hint(mut self, hint: impl Into<String>) -> Self {
         self.hints.push(hint.into());
         self
@@ -50,6 +59,10 @@ impl DiagnosticCollector {
 
     pub fn error(&mut self, message: impl Into<String>, span: Span) {
         self.push(Diagnostic::error(message, span));
+    }
+
+    pub fn warning(&mut self, message: impl Into<String>, span: Span) {
+        self.push(Diagnostic::warning(message, span));
     }
 
     pub fn has_errors(&self) -> bool {
