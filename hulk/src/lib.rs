@@ -3,7 +3,7 @@ pub mod diagnostics;
 pub mod lexer;
 pub mod macro_expander;
 pub mod node_ids;
-pub mod semantic_analyzer;
+pub mod semantic;
 pub mod symbol_table;
 pub mod types;
 
@@ -14,7 +14,7 @@ lalrpop_util::lalrpop_mod!(pub parser);
 pub use ast::*;
 pub use diagnostics::Diagnostic;
 pub use lexer::*;
-pub use semantic_analyzer::{SemanticAnalysis, SemanticAnalyzer};
+pub use semantic::{SemanticAnalysis, SemanticAnalyzer};
 pub use parser::ProgramParser;
 
 pub fn lex_safe(input: &str) -> Result<Vec<lexer::Token>, String> {
