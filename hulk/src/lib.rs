@@ -12,7 +12,7 @@ pub use ast::*;
 pub use diagnostics::Diagnostic;
 pub use lexer::*;
 pub use parser::ProgramParser;
-pub use semantic::{SemanticAnalysis, SemanticAnalyzer};
+pub use semantic::{SemanticAnalysis, SemanticAnalyzer, SemanticContext};
 pub use semantic::{macro_expander, symbol_table, types};
 
 pub fn lex_safe(input: &str) -> Result<Vec<lexer::Token>, String> {
@@ -99,7 +99,7 @@ pub fn parse_program(input: &str) -> Result<Program, Vec<Diagnostic>> {
         })
 }
 
-pub fn analyze_program(input: &str) -> Result<SemanticAnalysis, Vec<Diagnostic>> {
+pub fn analyze_program(input: &str) -> Result<SemanticContext, Vec<Diagnostic>> {
     let program = parse_program(input)?;
     SemanticAnalyzer::new().analyze(&program)
 }

@@ -23,19 +23,19 @@ struct ParentLink {
 }
 
 /// Forma estructural de un tipo declarado: constructor, campos, metodos y herencia.
-#[derive(Clone)]
-struct TypeShape {
-    ctor_params: Vec<SemanticType>,
-    fields: HashMap<String, SemanticType>,
-    methods: HashMap<String, SemanticType>,
-    parent: Option<String>,
+#[derive(Clone, Debug)]
+pub struct TypeShape {
+    pub ctor_params: Vec<SemanticType>,
+    pub fields: HashMap<String, SemanticType>,
+    pub methods: HashMap<String, SemanticType>,
+    pub parent: Option<String>,
 }
 
 /// Forma estructural de un protocolo declarado.
-#[derive(Clone)]
-struct ProtocolShape {
-    methods: HashMap<String, SemanticType>,
-    parent: Option<String>,
+#[derive(Clone, Debug)]
+pub struct ProtocolShape {
+    pub methods: HashMap<String, SemanticType>,
+    pub parent: Option<String>,
 }
 
 /// Restricciones acumuladas durante la inferencia de tipos.
@@ -47,11 +47,17 @@ struct SymbolRequirements {
     requires_vector: bool,
 }
 
-/// Resultado final del analisis semantico con los tipos inferidos por nodo.
-#[derive(Debug)]
-pub struct SemanticAnalysis {
+/// Contexto semantico de solo lectura para fases posteriores como codegen.
+#[derive(Debug, Clone)]
+pub struct SemanticContext {
     pub inferred_types: HashMap<NodeId, SemanticType>,
+    pub type_shapes: HashMap<String, TypeShape>,
+    pub protocol_shapes: HashMap<String, ProtocolShape>,
+    pub global_symbols: HashMap<String, Symbol>,
 }
+
+/// Alias de compatibilidad para codigo que ya consume SemanticAnalysis.
+pub type SemanticAnalysis = SemanticContext;
 
 /// Orquesta las pasadas semanticas, el analisis de flujo y la inferencia de tipos.
 pub struct SemanticAnalyzer {
@@ -106,7 +112,7 @@ impl SemanticAnalyzer {
     }
 
     /// Ejecuta el analisis semantico completo sobre el programa.
-    pub fn analyze(mut self, program: &Program) -> Result<SemanticAnalysis, Vec<Diagnostic>> {
+    pub fn analyze(mut self, program: &Program) -> Result<SemanticContext, Vec<Diagnostic>> {
         self.collect_top_level(program);
         self.validate_hierarchies();
         self.infer_program_annotations(program);
@@ -117,8 +123,11 @@ impl SemanticAnalyzer {
         if self.diagnostics.has_errors() {
             Err(self.diagnostics.into_vec())
         } else {
-            Ok(SemanticAnalysis {
+            Ok(SemanticContext {
                 inferred_types: self.inferred_types,
+                type_shapes: self.type_shapes,
+                protocol_shapes: self.protocol_shapes,
+                global_symbols: self.symbols.snapshot(),
             })
         }
     }

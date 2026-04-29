@@ -66,4 +66,16 @@ impl SymbolTable {
 
         false
     }
+
+    pub fn snapshot(&self) -> HashMap<String, Symbol> {
+        let mut snapshot = HashMap::new();
+
+        for scope in &self.scopes {
+            for (name, symbol) in scope {
+                snapshot.insert(name.clone(), symbol.clone());
+            }
+        }
+
+        snapshot
+    }
 }
