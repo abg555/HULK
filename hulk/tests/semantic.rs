@@ -444,6 +444,142 @@ render(new Person())
 }
 
 #[test]
+fn accepts_functor_protocol_call_syntax() {
+    let input = r#"
+protocol NumberFilter {
+    invoke(x: Number): Boolean;
+}
+
+type IsOdd {
+    invoke(x: Number): Boolean => x % 2 == 1;
+}
+
+function test(filter: NumberFilter): Boolean => filter(3);
+test(new IsOdd())
+"#;
+
+    let result = analyze_program(input);
+    assert!(
+        result.is_ok(),
+        "expected functor protocol call syntax, got: {result:?}"
+    );
+}
+
+#[test]
+fn accepts_function_as_functor_protocol_argument() {
+    let input = r#"
+protocol NumberFilter {
+    invoke(x: Number): Boolean;
+}
+
+function is_odd(x: Number): Boolean => x % 2 == 1;
+function test(filter: NumberFilter): Boolean => filter(3);
+test(is_odd)
+"#;
+
+    let result = analyze_program(input);
+    assert!(
+        result.is_ok(),
+        "expected function to satisfy functor protocol, got: {result:?}"
+    );
+}
+
+#[test]
+fn accepts_lambda_as_functor_protocol_argument() {
+    let input = r#"
+protocol NumberFilter {
+    invoke(x: Number): Boolean;
+}
+
+function test(filter: NumberFilter): Boolean => filter(3);
+test((x: Number): Boolean => x % 2 == 1)
+"#;
+
+    let result = analyze_program(input);
+    assert!(
+        result.is_ok(),
+        "expected lambda to satisfy functor protocol, got: {result:?}"
+    );
+}
+
+#[test]
+fn accepts_functor_object_where_function_type_is_expected() {
+    let input = r#"
+type IsOdd {
+    invoke(x: Number): Boolean => x % 2 == 1;
+}
+
+function test(filter: (Number) -> Boolean): Boolean => filter(3);
+test(new IsOdd())
+"#;
+
+    let result = analyze_program(input);
+    assert!(
+        result.is_ok(),
+        "expected functor object to satisfy function type, got: {result:?}"
+    );
+}
+
+#[test]
+fn accepts_invoke_member_on_function_type_functor_annotation() {
+    let input = r#"
+function test(filter: (Number) -> Boolean): Boolean => filter.invoke(3);
+test((x: Number): Boolean => x % 2 == 1)
+"#;
+
+    let result = analyze_program(input);
+    assert!(
+        result.is_ok(),
+        "expected function type to expose invoke, got: {result:?}"
+    );
+}
+
+#[test]
+fn accepts_type_call_as_constructor_for_functor_examples() {
+    let input = r#"
+protocol NumberFilter {
+    invoke(x: Number): Boolean;
+}
+
+type IsOdd {
+    invoke(x: Number): Boolean => x % 2 == 1;
+}
+
+function test(filter: NumberFilter): Boolean => filter(3);
+test(IsOdd())
+"#;
+
+    let result = analyze_program(input);
+    assert!(
+        result.is_ok(),
+        "expected Type(...) constructor shorthand, got: {result:?}"
+    );
+}
+
+#[test]
+fn rejects_functor_call_with_wrong_arity() {
+    let input = r#"
+protocol NumberFilter {
+    invoke(x: Number): Boolean;
+}
+
+type IsOdd {
+    invoke(x: Number): Boolean => x % 2 == 1;
+}
+
+function test(filter: NumberFilter): Boolean => filter();
+test(new IsOdd())
+"#;
+
+    let diagnostics = analyze_program(input).expect_err("expected functor arity error");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.message.contains("Aridad invalida"))
+    );
+}
+
+#[test]
 fn rejects_non_exhaustive_boolean_match() {
     let input = r#"
 let x: Boolean = true in match x {
