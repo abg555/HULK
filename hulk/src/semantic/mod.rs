@@ -8,6 +8,7 @@ use crate::semantic::types::SemanticType;
 // Internal modules
 mod expr;
 mod flow;
+pub mod functor_desugar;
 mod inference;
 pub mod macro_expander;
 mod scope;
