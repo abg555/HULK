@@ -11,6 +11,12 @@ pub enum Token {
     BlockComment,
 
     //keywords
+    #[token("import")]
+    Import,
+
+    #[token("export")]
+    Export,
+
     #[token("let")]
     Let,
 
