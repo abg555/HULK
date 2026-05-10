@@ -265,6 +265,12 @@ fn print_ast(program: &hulk::Program) {
                 println!("  [{}] Expression (global)", i);
                 print_expr_details(expr, 6);
             }
+            hulk::Item::Import(imp) => {
+                println!("  [{}] Import: {}", i, imp.module);
+            }
+            hulk::Item::Export(exp) => {
+                println!("  [{}] Export: {}", i, exp.module);
+            }
         }
     }
     println!();
