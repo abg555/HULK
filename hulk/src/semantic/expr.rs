@@ -173,45 +173,50 @@ impl SemanticAnalyzer {
                 }
             }
             KindExpr::Call(call) => {
-                let callee = self.check_expr(&call.callee);
-                let arg_types = call
-                    .arguments
-                    .iter()
-                    .map(|arg| self.check_expr(arg))
-                    .collect::<Vec<_>>();
+                if let KindExpr::Variable(var) = &call.callee.kind
+                    && self
+                        .symbols
+                        .lookup(&var.name)
+                        .is_some_and(|symbol| symbol.kind == SymbolKind::Type)
+                {
+                    let arg_types = call
+                        .arguments
+                        .iter()
+                        .map(|arg| self.check_expr(arg))
+                        .collect::<Vec<_>>();
+                    self.check_constructor_call(&var.name, &arg_types, expr.span)
+                } else {
+                    let callee = self.check_expr(&call.callee);
+                    let arg_types = call
+                        .arguments
+                        .iter()
+                        .map(|arg| self.check_expr(arg))
+                        .collect::<Vec<_>>();
 
-                if let SemanticType::Function(params, ret) = callee {
-                    if params.len() != arg_types.len() {
-                        self.diagnostics.error(
-                            format!(
-                                "Aridad invalida: se esperaban {} argumentos y llegaron {}",
-                                params.len(),
-                                arg_types.len()
-                            ),
-                            expr.span,
-                        );
-                    }
-
-                    for (idx, (expected, actual)) in params.iter().zip(arg_types.iter()).enumerate()
-                    {
-                        if !self.is_compatible_type(expected, actual) {
-                            self.diagnostics.error(
-                                format!(
-                                    "Argumento {} incompatible: se esperaba {}, se obtuvo {}",
-                                    idx + 1,
-                                    expected,
-                                    actual
-                                ),
-                                expr.span,
-                            );
+                    match callee {
+                        SemanticType::Function(params, ret) => {
+                            self.check_callable_signature(&params, *ret, &arg_types, expr.span)
+                        }
+                        SemanticType::Custom(type_name) => {
+                            if let Some(invoke_signature) =
+                                self.lookup_functor_invoke_type(&type_name)
+                                && let SemanticType::Function(params, ret) = invoke_signature
+                            {
+                                self.check_callable_signature(&params, *ret, &arg_types, expr.span)
+                            } else {
+                                self.diagnostics.error(
+                                    "Intento de llamada sobre un valor no invocable",
+                                    expr.span,
+                                );
+                                SemanticType::Unknown
+                            }
+                        }
+                        _ => {
+                            self.diagnostics
+                                .error("Intento de llamada sobre un valor no invocable", expr.span);
+                            SemanticType::Unknown
                         }
                     }
-
-                    *ret
-                } else {
-                    self.diagnostics
-                        .error("Intento de llamada sobre un valor no invocable", expr.span);
-                    SemanticType::Unknown
                 }
             }
             KindExpr::BaseCall(call) => self.check_base_call(call, expr.span),
@@ -542,57 +547,12 @@ impl SemanticAnalyzer {
                 SemanticType::Function(params, Box::new(ret))
             }
             KindExpr::New(new_expr) => {
-                if let Some(symbol) = self.symbols.lookup(&new_expr.type_name) {
-                    if symbol.kind != SymbolKind::Type {
-                        self.diagnostics.error(
-                            format!("{} no es un tipo construible", new_expr.type_name),
-                            expr.span,
-                        );
-                    }
-                } else {
-                    self.diagnostics.error(
-                        format!("Tipo no definido: {}", new_expr.type_name),
-                        expr.span,
-                    );
-                }
-
                 let arg_types = new_expr
                     .arguments
                     .iter()
                     .map(|arg| self.check_expr(arg))
                     .collect::<Vec<_>>();
-
-                if let Some(shape) = self.type_shapes.get(&new_expr.type_name) {
-                    if shape.ctor_params.len() != arg_types.len() {
-                        self.diagnostics.error(
-                            format!(
-                                "Constructor de {} espera {} argumentos y recibio {}",
-                                new_expr.type_name,
-                                shape.ctor_params.len(),
-                                arg_types.len()
-                            ),
-                            expr.span,
-                        );
-                    }
-
-                    for (idx, (expected, actual)) in
-                        shape.ctor_params.iter().zip(arg_types.iter()).enumerate()
-                    {
-                        if !self.is_compatible_type(expected, actual) {
-                            self.diagnostics.error(
-                                format!(
-                                    "Argumento {} incompatible en constructor de {}: esperado {}, recibido {}",
-                                    idx + 1,
-                                    new_expr.type_name,
-                                    expected,
-                                    actual
-                                ),
-                                expr.span,
-                            );
-                        }
-                    }
-                }
-                SemanticType::Custom(new_expr.type_name.clone())
+                self.check_constructor_call(&new_expr.type_name, &arg_types, expr.span)
             }
             KindExpr::Is(is_expr) => {
                 let expression_ty = self.check_expr(&is_expr.expression);
@@ -631,6 +591,93 @@ impl SemanticAnalyzer {
 
         self.inferred_types.insert(expr.id, inferred.clone());
         inferred
+    }
+
+    /// Valida aridad y tipos de una llamada a funcion o functor.
+    fn check_callable_signature(
+        &mut self,
+        params: &[SemanticType],
+        ret: SemanticType,
+        arg_types: &[SemanticType],
+        span: Span,
+    ) -> SemanticType {
+        if params.len() != arg_types.len() {
+            self.diagnostics.error(
+                format!(
+                    "Aridad invalida: se esperaban {} argumentos y llegaron {}",
+                    params.len(),
+                    arg_types.len()
+                ),
+                span,
+            );
+        }
+
+        for (idx, (expected, actual)) in params.iter().zip(arg_types.iter()).enumerate() {
+            if !self.is_compatible_type(expected, actual) {
+                self.diagnostics.error(
+                    format!(
+                        "Argumento {} incompatible: se esperaba {}, se obtuvo {}",
+                        idx + 1,
+                        expected,
+                        actual
+                    ),
+                    span,
+                );
+            }
+        }
+
+        ret
+    }
+
+    /// Valida una construccion `new T(...)` o su alias `T(...)`.
+    fn check_constructor_call(
+        &mut self,
+        type_name: &str,
+        arg_types: &[SemanticType],
+        span: Span,
+    ) -> SemanticType {
+        if let Some(symbol) = self.symbols.lookup(type_name) {
+            if symbol.kind != SymbolKind::Type {
+                self.diagnostics
+                    .error(format!("{} no es un tipo construible", type_name), span);
+            }
+        } else {
+            self.diagnostics
+                .error(format!("Tipo no definido: {}", type_name), span);
+        }
+
+        if let Some(shape) = self.type_shapes.get(type_name).cloned() {
+            if shape.ctor_params.len() != arg_types.len() {
+                self.diagnostics.error(
+                    format!(
+                        "Constructor de {} espera {} argumentos y recibio {}",
+                        type_name,
+                        shape.ctor_params.len(),
+                        arg_types.len()
+                    ),
+                    span,
+                );
+            }
+
+            for (idx, (expected, actual)) in
+                shape.ctor_params.iter().zip(arg_types.iter()).enumerate()
+            {
+                if !self.is_compatible_type(expected, actual) {
+                    self.diagnostics.error(
+                        format!(
+                            "Argumento {} incompatible en constructor de {}: esperado {}, recibido {}",
+                            idx + 1,
+                            type_name,
+                            expected,
+                            actual
+                        ),
+                        span,
+                    );
+                }
+            }
+        }
+
+        SemanticType::Custom(type_name.to_string())
     }
 
     /// Valida una expresion `if`, incluyendo ramas `elif` y `else`.

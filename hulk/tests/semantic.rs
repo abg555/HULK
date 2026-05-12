@@ -1,4 +1,5 @@
 use hulk::analyze_program;
+use std::fs;
 
 #[test]
 fn reports_undefined_identifier() {
@@ -269,6 +270,96 @@ let x = new Foo() in x.missing
 }
 
 #[test]
+fn accepts_namespace_import_member_calls() {
+    let module_path = "math.hulk";
+    let module_source = r#"
+function mlog(x) => x;
+"#;
+
+    fs::write(module_path, module_source).expect("failed to write temp math module");
+
+    let input = r#"
+import math
+
+math.mlog(42)
+"#;
+
+    let result = analyze_program(input);
+    fs::remove_file(module_path).ok();
+
+    assert!(
+        result.is_ok(),
+        "expected namespace import member call to be valid, got: {result:?}"
+    );
+}
+
+#[test]
+fn reports_missing_imported_modules() {
+    let input = r#"
+import semanticmissingmodule
+"#;
+
+    let diagnostics = analyze_program(input).expect_err("expected missing module error");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.message.contains("Modulo no encontrado")),
+        "expected missing module diagnostic, got: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn reports_import_cycles_between_modules() {
+    let a_path = "semanticcyclea.hulk";
+    let b_path = "semanticcycleb.hulk";
+
+    fs::write(a_path, "import semanticcycleb\n").expect("failed to write cycle module A");
+    fs::write(b_path, "import semanticcyclea\n").expect("failed to write cycle module B");
+
+    let diagnostics = analyze_program("import semanticcyclea")
+        .expect_err("expected import cycle diagnostic");
+
+    fs::remove_file(a_path).ok();
+    fs::remove_file(b_path).ok();
+
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.message.contains("Ciclo de import detectado")),
+        "expected import cycle diagnostic, got: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn reports_nonexistent_exports() {
+    let module_name = "semanticexporterrormodule";
+    let module_path = format!("{}.hulk", module_name);
+    let module_source = r#"
+function publicfn() => 1;
+export missingfn
+"#;
+
+    fs::write(&module_path, module_source).expect("failed to write temp module");
+
+    let input = format!("import {}", module_name);
+    let result = analyze_program(&input);
+    fs::remove_file(&module_path).ok();
+
+    assert!(
+        result.is_err(),
+        "expected export validation to fail, got: {result:?}"
+    );
+
+    let diagnostics = result.expect_err("expected export validation error");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.message.contains("Export inexistente")),
+        "expected nonexistent export diagnostic, got: {diagnostics:?}"
+    );
+}
+
+#[test]
 fn validates_constructor_arguments() {
     let input = r#"
 type Point(x: Number, y: Number) {
@@ -441,6 +532,142 @@ render(new Person())
         d.message.contains("Argumento 1 incompatible")
             || d.message.contains("no define el miembro show")
     }));
+}
+
+#[test]
+fn accepts_functor_protocol_call_syntax() {
+    let input = r#"
+protocol NumberFilter {
+    invoke(x: Number): Boolean;
+}
+
+type IsOdd {
+    invoke(x: Number): Boolean => x % 2 == 1;
+}
+
+function test(filter: NumberFilter): Boolean => filter(3);
+test(new IsOdd())
+"#;
+
+    let result = analyze_program(input);
+    assert!(
+        result.is_ok(),
+        "expected functor protocol call syntax, got: {result:?}"
+    );
+}
+
+#[test]
+fn accepts_function_as_functor_protocol_argument() {
+    let input = r#"
+protocol NumberFilter {
+    invoke(x: Number): Boolean;
+}
+
+function is_odd(x: Number): Boolean => x % 2 == 1;
+function test(filter: NumberFilter): Boolean => filter(3);
+test(is_odd)
+"#;
+
+    let result = analyze_program(input);
+    assert!(
+        result.is_ok(),
+        "expected function to satisfy functor protocol, got: {result:?}"
+    );
+}
+
+#[test]
+fn accepts_lambda_as_functor_protocol_argument() {
+    let input = r#"
+protocol NumberFilter {
+    invoke(x: Number): Boolean;
+}
+
+function test(filter: NumberFilter): Boolean => filter(3);
+test((x: Number): Boolean => x % 2 == 1)
+"#;
+
+    let result = analyze_program(input);
+    assert!(
+        result.is_ok(),
+        "expected lambda to satisfy functor protocol, got: {result:?}"
+    );
+}
+
+#[test]
+fn accepts_functor_object_where_function_type_is_expected() {
+    let input = r#"
+type IsOdd {
+    invoke(x: Number): Boolean => x % 2 == 1;
+}
+
+function test(filter: (Number) -> Boolean): Boolean => filter(3);
+test(new IsOdd())
+"#;
+
+    let result = analyze_program(input);
+    assert!(
+        result.is_ok(),
+        "expected functor object to satisfy function type, got: {result:?}"
+    );
+}
+
+#[test]
+fn accepts_invoke_member_on_function_type_functor_annotation() {
+    let input = r#"
+function test(filter: (Number) -> Boolean): Boolean => filter.invoke(3);
+test((x: Number): Boolean => x % 2 == 1)
+"#;
+
+    let result = analyze_program(input);
+    assert!(
+        result.is_ok(),
+        "expected function type to expose invoke, got: {result:?}"
+    );
+}
+
+#[test]
+fn accepts_type_call_as_constructor_for_functor_examples() {
+    let input = r#"
+protocol NumberFilter {
+    invoke(x: Number): Boolean;
+}
+
+type IsOdd {
+    invoke(x: Number): Boolean => x % 2 == 1;
+}
+
+function test(filter: NumberFilter): Boolean => filter(3);
+test(IsOdd())
+"#;
+
+    let result = analyze_program(input);
+    assert!(
+        result.is_ok(),
+        "expected Type(...) constructor shorthand, got: {result:?}"
+    );
+}
+
+#[test]
+fn rejects_functor_call_with_wrong_arity() {
+    let input = r#"
+protocol NumberFilter {
+    invoke(x: Number): Boolean;
+}
+
+type IsOdd {
+    invoke(x: Number): Boolean => x % 2 == 1;
+}
+
+function test(filter: NumberFilter): Boolean => filter();
+test(new IsOdd())
+"#;
+
+    let diagnostics = analyze_program(input).expect_err("expected functor arity error");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.message.contains("Aridad invalida"))
+    );
 }
 
 #[test]
