@@ -1,25 +1,38 @@
 use inkwell::context::Context;
 
+use hulk::code_gen::CodeGenerator;
+use hulk::{parse_program, SemanticAnalyzer};
+
 fn main() {
+   let input = "print(42 + 58)";
+
+    let program = match parse_program(input) {
+        Ok(program) => program,
+        Err(diagnostics) => {
+            for diagnostic in diagnostics {
+                eprintln!("{}", diagnostic.message);
+            }
+            return;
+        }
+    };
+
+    let analysis = match SemanticAnalyzer::new().analyze(&program) {
+        Ok(analysis) => analysis,
+        Err(diagnostics) => {
+            for diagnostic in diagnostics {
+                eprintln!("{}", diagnostic.message);
+            }
+            return;
+        }
+    };
+
     let context = Context::create();
+    let mut codegen = CodeGenerator::new(&context, "hulk_test");
 
-    let module = context.create_module("test");
+    if let Err(message) = codegen.codegen_program(&program, &analysis) {
+        eprintln!("Error en codegen: {}", message);
+        return;
+    }
 
-    let builder = context.create_builder();
-
-    let i32_type = context.i32_type();
-
-    let fn_type = i32_type.fn_type(&[], false);
-
-    let function = module.add_function("main", fn_type, None);
-
-    let block = context.append_basic_block(function, "entry");
-
-    builder.position_at_end(block);
-
-    let value = i32_type.const_int(42, false);
-
-    builder.build_return(Some(&value)).unwrap();
-
-    module.print_to_stderr();
+    codegen.module().print_to_stderr();
 }
