@@ -38,6 +38,8 @@ extern {
         "Number" => Token::TypeNumber,
         "String" => Token::TypeString,
         "Boolean" => Token::TypeBoolean,
+        "export" => Token::Export,
+        "import" => Token::Import,
         "+" => Token::Plus,
         "-" => Token::Minus,
         "*" => Token::Star,
@@ -72,6 +74,7 @@ extern {
         ";" => Token::Semicolon,
         "=>" => Token::Arrow,
         "->" => Token::ThinArrow,
+        
     }
 }
 
@@ -97,6 +100,8 @@ TopLevelItems: Vec<Item> = {
 }
 
 TopLevelItem: Item = {
+    <imp: ImportDecl> => Item::Import(imp),
+    <exp: ExportDecl> => Item::Export(exp),
     <macr:MacroDecl> => Item::Macro(macr),
     <potro: ProtocolDecl> => Item::Protocol(potro),
     <typ: TypeDecl> => Item::Type(typ),
@@ -104,12 +109,22 @@ TopLevelItem: Item = {
 }
 
 Item: Item = {
+    <imp: ImportDecl> => Item::Import(imp),
+    <exp: ExportDecl> => Item::Export(exp),
     <macr:MacroDecl> => Item::Macro(macr),
     <potro: ProtocolDecl> => Item::Protocol(potro),
     <typ: TypeDecl> => Item::Type(typ),
     <func: FunctionDecl> => Item::Function(func),
     <expr : Expr> ";" => Item::GlobalExpr(expr),
 };
+
+ImportDecl: ImportDecl = {
+    "import" <module:"id"> => ImportDecl { module },
+}
+
+ExportDecl: ExportDecl = {
+    "export" <module:"id"> => ExportDecl { module },
+}
 
 MacroDecl: MacroDecl = {
     "def" <name:"id"> "(" <params:MacroParamList> ")" <_return_type:(":" <TypeRef>)?> "=>" <body:Expr> ";" => MacroDecl {name,params,body},
