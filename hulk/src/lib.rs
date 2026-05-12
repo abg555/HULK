@@ -101,12 +101,14 @@ pub fn parse_program(input: &str) -> Result<Program, Vec<Diagnostic>> {
 
 pub fn analyze_program(input: &str) -> Result<SemanticContext, Vec<Diagnostic>> {
     let program = parse_program(input)?;
-    SemanticAnalyzer::new().analyze(&program)
+    let mut analyzer = SemanticAnalyzer::new();
+    analyzer.analyze(&program)
 }
 
 pub fn desugar_functors(input: &str) -> Result<Program, Vec<Diagnostic>> {
     let program = parse_program(input)?;
-    let context = SemanticAnalyzer::new().analyze(&program)?;
+    let mut analyzer = SemanticAnalyzer::new();
+    let context = analyzer.analyze(&program)?;
     Ok(semantic::functor_desugar::desugar_program(
         program, &context,
     ))

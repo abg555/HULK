@@ -47,6 +47,8 @@ impl<'a> FunctorDesugar<'a> {
 
     fn desugar_item(&mut self, item: Item) -> Item {
         match item {
+            Item::Import(imp) => Item::Import(imp),
+            Item::Export(exp) => Item::Export(exp),
             Item::Function(func) => Item::Function(self.desugar_function_decl(func)),
             Item::Type(mut typ) => {
                 self.enter_scope();

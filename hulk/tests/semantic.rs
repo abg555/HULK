@@ -1,4 +1,5 @@
 use hulk::analyze_program;
+use std::fs;
 
 #[test]
 fn reports_undefined_identifier() {
@@ -265,6 +266,96 @@ let x = new Foo() in x.missing
         diagnostics
             .iter()
             .any(|d| d.message.contains("no define el miembro"))
+    );
+}
+
+#[test]
+fn accepts_namespace_import_member_calls() {
+    let module_path = "math.hulk";
+    let module_source = r#"
+function mlog(x) => x;
+"#;
+
+    fs::write(module_path, module_source).expect("failed to write temp math module");
+
+    let input = r#"
+import math
+
+math.mlog(42)
+"#;
+
+    let result = analyze_program(input);
+    fs::remove_file(module_path).ok();
+
+    assert!(
+        result.is_ok(),
+        "expected namespace import member call to be valid, got: {result:?}"
+    );
+}
+
+#[test]
+fn reports_missing_imported_modules() {
+    let input = r#"
+import semanticmissingmodule
+"#;
+
+    let diagnostics = analyze_program(input).expect_err("expected missing module error");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.message.contains("Modulo no encontrado")),
+        "expected missing module diagnostic, got: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn reports_import_cycles_between_modules() {
+    let a_path = "semanticcyclea.hulk";
+    let b_path = "semanticcycleb.hulk";
+
+    fs::write(a_path, "import semanticcycleb\n").expect("failed to write cycle module A");
+    fs::write(b_path, "import semanticcyclea\n").expect("failed to write cycle module B");
+
+    let diagnostics = analyze_program("import semanticcyclea")
+        .expect_err("expected import cycle diagnostic");
+
+    fs::remove_file(a_path).ok();
+    fs::remove_file(b_path).ok();
+
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.message.contains("Ciclo de import detectado")),
+        "expected import cycle diagnostic, got: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn reports_nonexistent_exports() {
+    let module_name = "semanticexporterrormodule";
+    let module_path = format!("{}.hulk", module_name);
+    let module_source = r#"
+function publicfn() => 1;
+export missingfn
+"#;
+
+    fs::write(&module_path, module_source).expect("failed to write temp module");
+
+    let input = format!("import {}", module_name);
+    let result = analyze_program(&input);
+    fs::remove_file(&module_path).ok();
+
+    assert!(
+        result.is_err(),
+        "expected export validation to fail, got: {result:?}"
+    );
+
+    let diagnostics = result.expect_err("expected export validation error");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.message.contains("Export inexistente")),
+        "expected nonexistent export diagnostic, got: {diagnostics:?}"
     );
 }
 

@@ -118,6 +118,8 @@ impl SemanticAnalyzer {
         };
 
         match (expected_symbol.kind, actual_symbol.kind) {
+            (SymbolKind::Namespace, SymbolKind::Namespace) => expected_name == actual_name,
+            (SymbolKind::Namespace, _) | (_, SymbolKind::Namespace) => false,
             (SymbolKind::Type, SymbolKind::Type) => {
                 self.type_is_subtype_of(actual_name, expected_name)
             }
@@ -326,6 +328,20 @@ impl SemanticAnalyzer {
             );
             return SemanticType::Unknown;
         };
+
+        // If the object is a loaded namespace (module), look for the member in the
+        // module's public symbol table first.
+        if let Some(ns) = self.namespaces.get(type_name) {
+            if let Some(sym) = ns.get(member) {
+                return sym.typ.clone();
+            } else {
+                self.diagnostics.error(
+                    format!("El modulo {} no define el miembro {}", type_name, member),
+                    span,
+                );
+                return SemanticType::Unknown;
+            }
+        }
 
         if let Some(member_type) = self.lookup_member_type(type_name, member) {
             return member_type;
