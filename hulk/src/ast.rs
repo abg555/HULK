@@ -7,11 +7,21 @@ pub struct Program {
 
 #[derive(Clone)]
 pub enum Item {
+    Import(ImportDecl),
+    Export(ExportDecl),
     Function(FunctionDecl),
     Type(TypeDecl),
     Protocol(ProtocolDecl),
     Macro(MacroDecl),
     GlobalExpr(Expr),
+}
+
+pub struct ImportDecl {
+    pub module: String,
+}
+
+pub struct ExportDecl {
+    pub module: String,
 }
 
 #[derive(Clone)]
