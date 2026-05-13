@@ -15,8 +15,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                 continue;
             };
 
-            let params = self.function_param_kinds(func, analysis)?;
-            let ret = self.function_return_kind(func, analysis)?;
+            let (params, ret) = self.function_signature(func, analysis)?;
             let fn_type = self.fn_type_for_signature(&params, ret);
             let function = self.module.add_function(&func.name, fn_type, None);
 
@@ -137,49 +136,26 @@ impl<'ctx> CodeGenerator<'ctx> {
         }
     }
 
-    fn function_param_kinds(
+    fn function_signature(
         &self,
         func: &FunctionDecl,
         analysis: &SemanticAnalysis,
-    ) -> Result<Vec<ValueKind>, String> {
-        func.params
+    ) -> Result<(Vec<ValueKind>, ValueKind), String> {
+        let symbol = analysis
+            .global_symbols
+            .get(&func.name)
+            .ok_or_else(|| format!("Funcion no encontrada en simbolos: {}", func.name))?;
+
+        let SemanticType::Function(params, ret) = &symbol.typ else {
+            return Err(format!("Simbolo {} no es funcion", func.name));
+        };
+
+        let param_kinds = params
             .iter()
-            .map(|param| {
-                if let Some(type_ref) = &param.types {
-                    let semantic = SemanticType::from_type_ref(type_ref);
-                    self.value_kind_from_semantic(&semantic)
-                } else if let Some(map) = analysis.inferred_function_params.get(&func.name)
-                    && let Some(semantic) = map.get(&param.name)
-                {
-                    self.value_kind_from_semantic(semantic)
-                } else {
-                    Err(format!(
-                        "Parametro sin tipo en funcion {}: {}",
-                        func.name, param.name
-                    ))
-                }
-            })
-            .collect()
-    }
+            .map(|typ| self.value_kind_from_semantic(typ))
+            .collect::<Result<Vec<_>, _>>()?;
+        let ret_kind = self.value_kind_from_semantic(ret.as_ref())?;
 
-    fn function_return_kind(
-        &self,
-        func: &FunctionDecl,
-        analysis: &SemanticAnalysis,
-    ) -> Result<ValueKind, String> {
-        if let Some(type_ref) = &func.return_type {
-            let semantic = SemanticType::from_type_ref(type_ref);
-            return self.value_kind_from_semantic(&semantic);
-        }
-
-        if let Some(semantic) = analysis.inferred_function_returns.get(&func.name) {
-            return self.value_kind_from_semantic(semantic);
-        }
-
-        if let Some(semantic) = analysis.inferred_types.get(&func.body.id) {
-            return self.value_kind_from_semantic(semantic);
-        }
-
-        Err(format!("No se pudo inferir retorno de {}", func.name))
+        Ok((param_kinds, ret_kind))
     }
 }

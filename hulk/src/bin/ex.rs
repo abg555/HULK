@@ -4,7 +4,9 @@ use hulk::code_gen::CodeGenerator;
 use hulk::{parse_program, SemanticAnalyzer};
 
 fn main() {
-   let input = "print(42 + 58)";
+   let input = "function add(x: Number, y: Number): Number => x + y;
+
+add(2, 3)";
 
     let program = match parse_program(input) {
         Ok(program) => program,
