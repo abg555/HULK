@@ -51,6 +51,8 @@ impl MacroExpander {
 
     fn expand_item(&mut self, item: Item) -> Item {
         match item {
+            Item::Import(imp) => Item::Import(imp),
+            Item::Export(exp) => Item::Export(exp),
             Item::Function(mut func) => {
                 func.body =
                     self.expand_expr(&func.body, &HashMap::new(), &[], &mut Vec::new(), false);

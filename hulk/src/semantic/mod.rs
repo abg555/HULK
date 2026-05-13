@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::fs;
 
 use crate::ast::*;
 use crate::diagnostics::{Diagnostic, DiagnosticCollector};
@@ -8,6 +9,7 @@ use crate::semantic::types::SemanticType;
 // Internal modules
 mod expr;
 mod flow;
+pub mod functor_desugar;
 mod inference;
 pub mod macro_expander;
 mod scope;
@@ -54,6 +56,8 @@ pub struct SemanticContext {
     pub type_shapes: HashMap<String, TypeShape>,
     pub protocol_shapes: HashMap<String, ProtocolShape>,
     pub global_symbols: HashMap<String, Symbol>,
+    pub imports: Vec<String>,
+    pub exports: Vec<String>,
 }
 
 /// Alias de compatibilidad para codigo que ya consume SemanticAnalysis.
@@ -79,6 +83,14 @@ pub struct SemanticAnalyzer {
     inferred_method_params: HashMap<String, HashMap<String, HashMap<String, SemanticType>>>,
     inferred_method_returns: HashMap<String, HashMap<String, SemanticType>>,
     synthetic_protocol_counter: usize,
+    imports: Vec<String>,
+    exports: Vec<String>,
+    /// Cache of analyzed modules by module name.
+    module_cache: HashMap<String, SemanticContext>,
+    /// Map of module name -> its public symbols snapshot.
+    namespaces: HashMap<String, HashMap<String, Symbol>>,
+    /// Modules currently being loaded (to detect cycles).
+    loading_modules: HashSet<String>,
 }
 
 impl SemanticAnalyzer {
@@ -106,14 +118,119 @@ impl SemanticAnalyzer {
             inferred_method_params: HashMap::new(),
             inferred_method_returns: HashMap::new(),
             synthetic_protocol_counter: 0,
+            imports: Vec::new(),
+            exports: Vec::new(),
+            module_cache: HashMap::new(),
+            namespaces: HashMap::new(),
+            loading_modules: HashSet::new(),
         };
         analyzer.install_prelude();
         analyzer
     }
 
+    fn with_module_state(
+        module_cache: HashMap<String, SemanticContext>,
+        namespaces: HashMap<String, HashMap<String, Symbol>>,
+        loading_modules: HashSet<String>,
+    ) -> Self {
+        let mut analyzer = Self::new();
+        analyzer.module_cache = module_cache;
+        analyzer.namespaces = namespaces;
+        analyzer.loading_modules = loading_modules;
+        analyzer
+    }
+
+    fn build_public_namespace(ctx: &SemanticContext) -> HashMap<String, Symbol> {
+        let exported: HashSet<String> = ctx.exports.iter().cloned().collect();
+        let has_explicit_exports = !exported.is_empty();
+
+        // Expose only the public API declared by the module. When a module
+        // has no export declarations yet, keep the historical behavior and
+        // publish all top-level symbols.
+        let mut public = HashMap::new();
+        for (name, sym) in &ctx.global_symbols {
+            if !has_explicit_exports || exported.contains(name) {
+                public.insert(name.clone(), sym.clone());
+            }
+        }
+        public
+    }
+
+    /// Load a module from disk (module name uses '.' as directory separator) and
+    /// register its public symbols in `namespaces`. Reports diagnostics on failure.
+    fn load_module(&mut self, module: &str) -> bool {
+        if self.namespaces.contains_key(module) {
+            return true;
+        }
+        if let Some(cached) = self.module_cache.get(module).cloned() {
+            self.namespaces
+                .insert(module.to_string(), Self::build_public_namespace(&cached));
+            return true;
+        }
+        if self.loading_modules.contains(module) {
+            self.diagnostics.error(
+                format!("Ciclo de import detectado: {}", module),
+                Span { start: 0, end: 0 },
+            );
+            return false;
+        }
+
+        self.loading_modules.insert(module.to_string());
+
+        let path = module.replace('.', "/") + ".hulk";
+        let loaded = match fs::read_to_string(&path) {
+            Ok(src) => match crate::parse_program(&src) {
+                Ok(program) => {
+                    let mut module_analyzer = SemanticAnalyzer::with_module_state(
+                        self.module_cache.clone(),
+                        self.namespaces.clone(),
+                        self.loading_modules.clone(),
+                    );
+                    match module_analyzer.analyze(&program) {
+                    Ok(ctx) => {
+                        self.module_cache = module_analyzer.module_cache;
+                        self.namespaces = module_analyzer.namespaces;
+                        self.loading_modules = module_analyzer.loading_modules;
+                        self.module_cache.insert(module.to_string(), ctx.clone());
+                        self.namespaces
+                            .insert(module.to_string(), Self::build_public_namespace(&ctx));
+                        true
+                    }
+                    Err(diags) => {
+                        self.module_cache = module_analyzer.module_cache;
+                        self.namespaces = module_analyzer.namespaces;
+                        self.loading_modules = module_analyzer.loading_modules;
+                        for d in diags {
+                            self.diagnostics.push(d);
+                        }
+                        false
+                    }
+                }
+                },
+                Err(diags) => {
+                    for d in diags {
+                        self.diagnostics.push(d);
+                    }
+                    false
+                }
+            },
+            Err(_) => {
+                self.diagnostics.error(
+                    format!("Modulo no encontrado: {}", path),
+                    Span { start: 0, end: 0 },
+                );
+                false
+            }
+        };
+
+        self.loading_modules.remove(module);
+        loaded
+    }
+
     /// Ejecuta el analisis semantico completo sobre el programa.
-    pub fn analyze(mut self, program: &Program) -> Result<SemanticContext, Vec<Diagnostic>> {
+    pub fn analyze(&mut self, program: &Program) -> Result<SemanticContext, Vec<Diagnostic>> {
         self.collect_top_level(program);
+        self.validate_exports();
         self.validate_hierarchies();
         self.infer_program_annotations(program);
 
@@ -121,13 +238,15 @@ impl SemanticAnalyzer {
             self.check_item(item);
         }
         if self.diagnostics.has_errors() {
-            Err(self.diagnostics.into_vec())
+            Err(self.diagnostics.to_vec())
         } else {
             Ok(SemanticContext {
-                inferred_types: self.inferred_types,
-                type_shapes: self.type_shapes,
-                protocol_shapes: self.protocol_shapes,
+                inferred_types: self.inferred_types.clone(),
+                type_shapes: self.type_shapes.clone(),
+                protocol_shapes: self.protocol_shapes.clone(),
                 global_symbols: self.symbols.snapshot(),
+                imports: self.imports.clone(),
+                exports: self.exports.clone(),
             })
         }
     }
@@ -136,6 +255,22 @@ impl SemanticAnalyzer {
     fn collect_top_level(&mut self, program: &Program) {
         for item in &program.items {
             match item {
+                Item::Import(imp) => {
+                    self.imports.push(imp.module.clone());
+                    // Eagerly load the module to collect its public symbols.
+                    if self.load_module(&imp.module) {
+                        // Register the module name as a namespace symbol so references to
+                        // the module identifier resolve in expressions.
+                        self.define_symbol(
+                            &imp.module,
+                            SymbolKind::Namespace,
+                            SemanticType::Custom(imp.module.clone()),
+                        );
+                    }
+                }
+                Item::Export(exp) => {
+                    self.exports.push(exp.module.clone());
+                }
                 Item::Function(func) => {
                     let params = func
                         .params
@@ -197,6 +332,27 @@ impl SemanticAnalyzer {
                     self.define_symbol(&macr.name, SymbolKind::Macro, SemanticType::Unknown);
                 }
                 Item::GlobalExpr(_) => {}
+            }
+        }
+    }
+
+    /// Valida que cada export apunte a un simbolo top-level existente.
+    fn validate_exports(&mut self) {
+        let mut seen = HashSet::new();
+        for export_name in &self.exports {
+            if !seen.insert(export_name.clone()) {
+                self.diagnostics.error(
+                    format!("Export duplicado: {}", export_name),
+                    Span { start: 0, end: 0 },
+                );
+                continue;
+            }
+
+            if self.symbols.lookup(export_name).is_none() {
+                self.diagnostics.error(
+                    format!("Export inexistente: {}", export_name),
+                    Span { start: 0, end: 0 },
+                );
             }
         }
     }
@@ -277,6 +433,8 @@ impl SemanticAnalyzer {
     /// Despacha el chequeo segun el tipo de item top-level.
     fn check_item(&mut self, item: &Item) {
         match item {
+            Item::Import(_) => {}
+            Item::Export(_) => {}
             Item::Function(func) => self.check_function_decl(func),
             Item::Type(typ) => self.check_type_decl(typ),
             Item::Protocol(proto) => self.check_protocol_decl(proto),

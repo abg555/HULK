@@ -10,6 +10,7 @@ pub fn assign_program_node_ids(program: &mut Program) {
 
 fn assign_item_node_ids(item: &mut Item, next_id: &mut u32) {
     match item {
+        Item::Import(_) | Item::Export(_) => {}
         Item::Function(func) => assign_expr_node_ids(&mut func.body, next_id),
         Item::Type(typ) => {
             for field in &mut typ.fields {

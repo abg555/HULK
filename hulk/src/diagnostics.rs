@@ -75,6 +75,18 @@ impl DiagnosticCollector {
             .any(|d| d.level == DiagnosticLevel::Error)
     }
 
+    pub fn to_vec(&self) -> Vec<Diagnostic> {
+        let mut diagnostics = self.diagnostics.clone();
+        diagnostics.sort_by(|a, b| {
+            a.span
+                .start
+                .cmp(&b.span.start)
+                .then_with(|| a.span.end.cmp(&b.span.end))
+                .then_with(|| a.message.cmp(&b.message))
+        });
+        diagnostics
+    }
+
     pub fn into_vec(mut self) -> Vec<Diagnostic> {
         self.diagnostics.sort_by(|a, b| {
             a.span

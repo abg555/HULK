@@ -17,6 +17,7 @@ impl SemanticAnalyzer {
 
         for item in &program.items {
             match item {
+                crate::ast::Item::Import(_) | crate::ast::Item::Export(_) => {}
                 crate::ast::Item::Function(func) => {
                     let inferred = self.infer_param_types(func);
                     let resolved_params = func

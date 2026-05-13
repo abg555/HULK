@@ -16,10 +16,12 @@ pub enum Item {
     GlobalExpr(Expr),
 }
 
+#[derive(Clone)]
 pub struct ImportDecl {
     pub module: String,
 }
 
+#[derive(Clone)]
 pub struct ExportDecl {
     pub module: String,
 }

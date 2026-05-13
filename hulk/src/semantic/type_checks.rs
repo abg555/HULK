@@ -28,20 +28,80 @@ impl SemanticAnalyzer {
             (
                 SemanticType::Function(expected_params, expected_ret),
                 SemanticType::Function(actual_params, actual_ret),
-            ) => {
-                expected_params.len() == actual_params.len()
-                    && expected_params.iter().zip(actual_params.iter()).all(
-                        |(expected_param, actual_param)| {
-                            self.is_compatible_type(actual_param, expected_param)
-                        },
-                    )
-                    && self.is_compatible_type(expected_ret, actual_ret)
+            ) => self.function_signature_compatible(
+                expected_params,
+                expected_ret,
+                actual_params,
+                actual_ret,
+            ),
+            (SemanticType::Custom(expected_name), SemanticType::Function(_, _)) => {
+                self.function_compatible_with_functor_protocol(expected_name, actual)
+            }
+            (SemanticType::Function(_, _), SemanticType::Custom(actual_name)) => {
+                self.functor_compatible_with_function(expected, actual_name)
             }
             (SemanticType::Custom(expected_name), SemanticType::Custom(actual_name)) => {
                 self.custom_type_compatible(expected_name, actual_name)
             }
             _ => false,
         }
+    }
+
+    /// Comprueba compatibilidad entre firmas de funcion.
+    pub(super) fn function_signature_compatible(
+        &self,
+        expected_params: &[SemanticType],
+        expected_ret: &SemanticType,
+        actual_params: &[SemanticType],
+        actual_ret: &SemanticType,
+    ) -> bool {
+        expected_params.len() == actual_params.len()
+            && expected_params.iter().zip(actual_params.iter()).all(
+                |(expected_param, actual_param)| {
+                    self.is_compatible_type(actual_param, expected_param)
+                },
+            )
+            && self.is_compatible_type(expected_ret, actual_ret)
+    }
+
+    /// Busca la firma `invoke` que hace invocable a un tipo o protocolo.
+    pub(super) fn lookup_functor_invoke_type(&self, type_name: &str) -> Option<SemanticType> {
+        let symbol = self.symbols.lookup(type_name)?;
+        match symbol.kind {
+            SymbolKind::Protocol => self.lookup_protocol_member_type(type_name, "invoke"),
+            SymbolKind::Type => self.lookup_member_type(type_name, "invoke"),
+            _ => None,
+        }
+    }
+
+    /// Permite usar una funcion/lambda donde se espera un protocolo functor.
+    fn function_compatible_with_functor_protocol(
+        &self,
+        expected_name: &str,
+        actual: &SemanticType,
+    ) -> bool {
+        let Some(symbol) = self.symbols.lookup(expected_name) else {
+            return false;
+        };
+        if symbol.kind != SymbolKind::Protocol {
+            return false;
+        }
+
+        let Some(invoke_signature) = self.lookup_protocol_member_type(expected_name, "invoke")
+        else {
+            return false;
+        };
+
+        self.is_compatible_type(&invoke_signature, actual)
+    }
+
+    /// Permite usar un objeto con `invoke` donde se espera un tipo funcion.
+    fn functor_compatible_with_function(&self, expected: &SemanticType, actual_name: &str) -> bool {
+        let Some(invoke_signature) = self.lookup_functor_invoke_type(actual_name) else {
+            return false;
+        };
+
+        self.is_compatible_type(expected, &invoke_signature)
     }
 
     /// Comprueba compatibilidad entre tipos personalizados, tipos y protocolos.
@@ -58,6 +118,8 @@ impl SemanticAnalyzer {
         };
 
         match (expected_symbol.kind, actual_symbol.kind) {
+            (SymbolKind::Namespace, SymbolKind::Namespace) => expected_name == actual_name,
+            (SymbolKind::Namespace, _) | (_, SymbolKind::Namespace) => false,
             (SymbolKind::Type, SymbolKind::Type) => {
                 self.type_is_subtype_of(actual_name, expected_name)
             }
@@ -252,6 +314,10 @@ impl SemanticAnalyzer {
         member: &str,
         span: Span,
     ) -> SemanticType {
+        if matches!(object_type, SemanticType::Function(_, _)) && member == "invoke" {
+            return object_type.clone();
+        }
+
         let SemanticType::Custom(type_name) = object_type else {
             self.diagnostics.error(
                 format!(
@@ -262,6 +328,20 @@ impl SemanticAnalyzer {
             );
             return SemanticType::Unknown;
         };
+
+        // If the object is a loaded namespace (module), look for the member in the
+        // module's public symbol table first.
+        if let Some(ns) = self.namespaces.get(type_name) {
+            if let Some(sym) = ns.get(member) {
+                return sym.typ.clone();
+            } else {
+                self.diagnostics.error(
+                    format!("El modulo {} no define el miembro {}", type_name, member),
+                    span,
+                );
+                return SemanticType::Unknown;
+            }
+        }
 
         if let Some(member_type) = self.lookup_member_type(type_name, member) {
             return member_type;

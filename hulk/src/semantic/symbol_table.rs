@@ -9,6 +9,7 @@ pub enum SymbolKind {
     Type,
     Protocol,
     Macro,
+    Namespace,
 }
 
 #[derive(Debug, Clone)]
