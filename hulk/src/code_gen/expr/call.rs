@@ -17,10 +17,11 @@ impl<'ctx> CodeGenerator<'ctx> {
         };
 
         match callee.name.as_str() {
-            "print" => Ok(CodegenValue::Number(self.lower_print(call, analysis)?)),
+            "print" => self.lower_print(call, analysis),
             "sqrt" => Ok(CodegenValue::Number(self.lower_unary_math(call, analysis, "llvm.sqrt.f64")?)),
             "sin" => Ok(CodegenValue::Number(self.lower_unary_math(call, analysis, "llvm.sin.f64")?)),
             "cos" => Ok(CodegenValue::Number(self.lower_unary_math(call, analysis, "llvm.cos.f64")?)),
+            "tan" => Ok(CodegenValue::Number(self.lower_tan(call, analysis)?)),
             "exp" => Ok(CodegenValue::Number(self.lower_unary_math(call, analysis, "llvm.exp.f64")?)),
             "log" => Ok(CodegenValue::Number(self.lower_log(call, analysis)?)),
             "rand" => Ok(CodegenValue::Number(self.lower_rand(call)?)),
@@ -39,6 +40,15 @@ impl<'ctx> CodeGenerator<'ctx> {
         }
 
         let arg = self.lower_expr(&call.arguments[0], analysis)?.into_number()?;
+        // Convert degrees to radians for trig functions: radians = degrees * (PI/180).
+        let arg = if intrinsic.contains("sin") || intrinsic.contains("cos") || intrinsic.contains("tan") {
+            let factor = self.f64_type.const_float(std::f64::consts::PI / 180.0);
+            self.builder
+                .build_float_mul(arg, factor, "deg2rad")
+                .map_err(|e| e.to_string())?
+        } else {
+            arg
+        };
         let function = self.get_unary_intrinsic(intrinsic);
         self.build_float_call(function, &[arg.into()], intrinsic)
     }
@@ -64,6 +74,35 @@ impl<'ctx> CodeGenerator<'ctx> {
             .map_err(|e| e.to_string())
     }
 
+    fn lower_tan(
+        &mut self,
+        call: &CallExpr,
+        analysis: &SemanticAnalysis,
+    ) -> Result<FloatValue<'ctx>, String> {
+        if call.arguments.len() != 1 {
+            return Err("Aridad invalida para funcion builtin".to_string());
+        }
+
+        let arg = self.lower_expr(&call.arguments[0], analysis)?.into_number()?;
+        // Convert degrees to radians: radians = degrees * (PI/180).
+        let arg_rad = {
+            let factor = self.f64_type.const_float(std::f64::consts::PI / 180.0);
+            self.builder
+                .build_float_mul(arg, factor, "deg2rad")
+                .map_err(|e| e.to_string())?
+        };
+
+        let sin_fn = self.get_unary_intrinsic("llvm.sin.f64");
+        let cos_fn = self.get_unary_intrinsic("llvm.cos.f64");
+        
+        let sin_val = self.build_float_call(sin_fn, &[arg_rad.into()], "sin")?;
+        let cos_val = self.build_float_call(cos_fn, &[arg_rad.into()], "cos")?;
+
+        self.builder
+            .build_float_div(sin_val, cos_val, "tantmp")
+            .map_err(|e| e.to_string())
+    }
+
     fn lower_rand(&mut self, call: &CallExpr) -> Result<FloatValue<'ctx>, String> {
         if !call.arguments.is_empty() {
             return Err("Aridad invalida para funcion builtin".to_string());
@@ -79,7 +118,7 @@ impl<'ctx> CodeGenerator<'ctx> {
         analysis: &SemanticAnalysis,
         name: &str,
     ) -> Result<CodegenValue<'ctx>, String> {
-        let Some(info) = self.get_function(name) else {
+        let Some(info) = self.get_function(name).cloned() else {
             return Err(format!("Funcion no encontrada: {}", name));
         };
 
@@ -93,6 +132,8 @@ impl<'ctx> CodeGenerator<'ctx> {
             let arg = match info.params[idx] {
                 super::super::ValueKind::Number => value.into_number()?.into(),
                 super::super::ValueKind::Bool => value.into_bool()?.into(),
+                super::super::ValueKind::String => value.into_string()?.into(),
+                super::super::ValueKind::Object => value.into_object()?.into(),
             };
             args.push(arg);
         }
@@ -109,6 +150,8 @@ impl<'ctx> CodeGenerator<'ctx> {
         match info.ret {
             super::super::ValueKind::Number => Ok(CodegenValue::Number(value.into_float_value())),
             super::super::ValueKind::Bool => Ok(CodegenValue::Bool(value.into_int_value())),
+            super::super::ValueKind::String => Ok(CodegenValue::String(value.into_pointer_value())),
+            super::super::ValueKind::Object => Ok(CodegenValue::Object(value.into_pointer_value())),
         }
     }
 
@@ -116,23 +159,47 @@ impl<'ctx> CodeGenerator<'ctx> {
         &mut self,
         call: &CallExpr,
         analysis: &SemanticAnalysis,
-    ) -> Result<FloatValue<'ctx>, String> {
+    ) -> Result<CodegenValue<'ctx>, String> {
         if call.arguments.len() != 1 {
-            return Err("Aridad invalida para funcion builtin".to_string());
+              return Err("Aridad invalida para funcion builtin".to_string());
         }
 
-        let value = self.lower_expr(&call.arguments[0], analysis)?.into_number()?;
+        let value = self.lower_expr(&call.arguments[0], analysis)?;
         let printf_fn = self.get_printf_function();
-        let fmt = self
-            .builder
-            .build_global_string_ptr("%f\n", "print_fmt")
-            .map_err(|e| e.to_string())?;
 
-        self.builder
-            .build_call(printf_fn, &[fmt.as_pointer_value().into(), value.into()], "print")
-            .map_err(|e| e.to_string())?;
-
-        Ok(value)
+        match value {
+            CodegenValue::Number(num) => {
+                let fmt = self
+                    .builder
+                    .build_global_string_ptr("%f\n", "print_fmt_num")
+                    .map_err(|e| e.to_string())?;
+                self.builder
+                    .build_call(printf_fn, &[fmt.as_pointer_value().into(), num.into()], "print")
+                    .map_err(|e| e.to_string())?;
+                Ok(CodegenValue::Number(num))
+            }
+            CodegenValue::String(str_val) => {
+                let fmt = self
+                    .builder
+                    .build_global_string_ptr("%s\n", "print_fmt_str")
+                    .map_err(|e| e.to_string())?;
+                self.builder
+                    .build_call(printf_fn, &[fmt.as_pointer_value().into(), str_val.into()], "print")
+                    .map_err(|e| e.to_string())?;
+                Ok(CodegenValue::String(str_val))
+            }
+            CodegenValue::Bool(bool_val) => {
+                let fmt = self
+                    .builder
+                    .build_global_string_ptr("%d\n", "print_fmt_bool")
+                    .map_err(|e| e.to_string())?;
+                self.builder
+                    .build_call(printf_fn, &[fmt.as_pointer_value().into(), bool_val.into()], "print")
+                    .map_err(|e| e.to_string())?;
+                Ok(CodegenValue::Bool(bool_val))
+            }
+            CodegenValue::Object(_) => Err("print todavia no soporta objetos".to_string()),
+        }
     }
 
     fn get_unary_intrinsic(&self, name: &str) -> FunctionValue<'ctx> {

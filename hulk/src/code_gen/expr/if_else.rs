@@ -114,6 +114,30 @@ impl<'ctx> CodeGenerator<'ctx> {
                 ]);
                 Ok(CodegenValue::Bool(phi.as_basic_value().into_int_value()))
             }
+            ValueKind::String => {
+                let i8_ptr_type = self.context.i8_type().ptr_type(inkwell::AddressSpace::default());
+                let phi = self
+                    .builder
+                    .build_phi(i8_ptr_type, "iftmp_str")
+                    .map_err(|e| e.to_string())?;
+                phi.add_incoming(&[
+                    (&then_value.into_string()?, then_block),
+                    (&else_value.into_string()?, else_block),
+                ]);
+                Ok(CodegenValue::String(phi.as_basic_value().into_pointer_value()))
+            }
+            ValueKind::Object => {
+                let i8_ptr_type = self.context.i8_type().ptr_type(inkwell::AddressSpace::default());
+                let phi = self
+                    .builder
+                    .build_phi(i8_ptr_type, "iftmp_obj")
+                    .map_err(|e| e.to_string())?;
+                phi.add_incoming(&[
+                    (&then_value.into_object()?, then_block),
+                    (&else_value.into_object()?, else_block),
+                ]);
+                Ok(CodegenValue::Object(phi.as_basic_value().into_pointer_value()))
+            }
         }
     }
 }

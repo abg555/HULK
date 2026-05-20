@@ -1,6 +1,6 @@
 use crate::ast::{FunctionDecl, Item, Program};
-use crate::semantic::SemanticAnalysis;
 use crate::semantic::types::SemanticType;
+use crate::semantic::SemanticAnalysis;
 
 use super::{CodeGenerator, FunctionInfo, ValueKind, VarInfo};
 
@@ -59,35 +59,30 @@ impl<'ctx> CodeGenerator<'ctx> {
                     .ok_or_else(|| "Parametro faltante".to_string())?;
                 arg.set_name(&param.name);
 
-                let (ptr, kind) = match info.params[idx] {
+                let kind = info.params[idx];
+                let ptr = self.alloca_for_kind(&kind, &param.name)?;
+
+                match kind {
                     ValueKind::Number => {
-                        let ptr = self
-                            .builder
-                            .build_alloca(self.f64_type, &param.name)
-                            .map_err(|e| e.to_string())?;
                         self.builder
                             .build_store(ptr, arg.into_float_value())
                             .map_err(|e| e.to_string())?;
-                        (ptr, ValueKind::Number)
                     }
                     ValueKind::Bool => {
-                        let ptr = self
-                            .builder
-                            .build_alloca(self.bool_type, &param.name)
-                            .map_err(|e| e.to_string())?;
                         self.builder
                             .build_store(ptr, arg.into_int_value())
                             .map_err(|e| e.to_string())?;
-                        (ptr, ValueKind::Bool)
                     }
-                };
+                    ValueKind::String | ValueKind::Object => {
+                        self.builder
+                            .build_store(ptr, arg.into_pointer_value())
+                            .map_err(|e| e.to_string())?;
+                    }
+                }
 
                 self.insert_var(
                     param.name.clone(),
-                    VarInfo {
-                        ptr,
-                        kind,
-                    },
+                    VarInfo { ptr, kind },
                 );
             }
 
@@ -103,6 +98,18 @@ impl<'ctx> CodeGenerator<'ctx> {
                     let boolean = value.into_bool()?;
                     self.builder
                         .build_return(Some(&boolean))
+                        .map_err(|e| e.to_string())?;
+                }
+                ValueKind::String => {
+                    let str_val = value.into_string()?;
+                    self.builder
+                        .build_return(Some(&str_val))
+                        .map_err(|e| e.to_string())?;
+                }
+                ValueKind::Object => {
+                    let obj_val = value.into_object()?;
+                    self.builder
+                        .build_return(Some(&obj_val))
                         .map_err(|e| e.to_string())?;
                 }
             }
@@ -124,15 +131,17 @@ impl<'ctx> CodeGenerator<'ctx> {
     ) -> inkwell::types::FunctionType<'ctx> {
         let param_types = params
             .iter()
-            .map(|kind| match kind {
-                ValueKind::Number => self.f64_type.into(),
-                ValueKind::Bool => self.bool_type.into(),
-            })
+            .map(|kind| self.basic_type_for_kind(kind).expect("tipo de parametro invalido").into())
             .collect::<Vec<_>>();
 
         match ret {
             ValueKind::Number => self.f64_type.fn_type(&param_types, false),
             ValueKind::Bool => self.bool_type.fn_type(&param_types, false),
+            ValueKind::String | ValueKind::Object => self
+                .context
+                .i8_type()
+                .ptr_type(inkwell::AddressSpace::default())
+                .fn_type(&param_types, false),
         }
     }
 

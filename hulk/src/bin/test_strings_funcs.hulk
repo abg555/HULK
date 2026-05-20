@@ -1,0 +1,22 @@
+// test_strings_funcs.hulk
+// Funciones que reciben y retornan strings
+
+function greet(name: String): String {
+    "Hello " @ name
+}
+
+function repeat_three(s: String): String {
+    s @ s @ s
+}
+
+// función que concatena llamadas anidadas
+function surround(word: String): String {
+    "[" @ word @ "]"
+}
+
+// Una única expresión global: bloque con las llamadas de prueba
+{
+    print(greet("Alice"));
+    print(repeat_three("ha"));
+    print(surround(greet("Bob")));
+}

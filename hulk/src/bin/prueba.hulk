@@ -1,0 +1,58 @@
+// function square(x: Number): Number => x * x;
+// function quad(x: Number): Number => square(square(x));
+
+// print(quad(2)) //16
+
+// function abs_value(x: Number): Number => if (x > 0) x else 0 - x;
+
+// print(abs_value(-7)) //7
+
+// function choose(x: Number): Number => if (x >= 10) x - 10 else x + 10;
+
+// print(choose(7)) //17
+
+// function fib(n: Number): Number => if (n <= 1) n else fib(n - 1) + fib(n - 2);
+
+// print(fib(7)) //13
+
+// function compute(x: Number): Number =>
+//   let a: Number = x * 2 in
+//   let b: Number = a + 5 in
+//   b * b;
+
+// print(compute(3)) //121
+
+// function show(x: Number): Number => {
+//   print(x);
+//   print(x * 2);
+//   print(x ^ 2);
+//   x ^ 2
+// };
+
+// print(show(5)) //imprime 5, 10, 25 y retorna 25
+
+// function nested(x: Number): Number => {
+//   let a: Number = x + 1 in {
+//     print(a);
+//     let b: Number = a * 2 in {
+//       print(b);
+//       b + a
+//     }
+//   }
+// };
+
+// print(nested(5)) //imprime 6, 12 y retorna 18
+
+// function factorial(n: Number): Number => if (n <= 1) 1 else n * factorial(n - 1);
+
+// print(factorial(5))  //120
+
+// function power(base_: Number, exp: Number): Number => if (exp == 0) 1 else base_ * power(base_, exp - 1);
+
+// print(power(2, 10))  //1024
+
+// function add1(x: Number): Number => x + 1;
+// function add2(x: Number): Number => add1(add1(x));
+// function add4(x: Number): Number => add2(add2(x));
+
+// print(add4(10)) //14

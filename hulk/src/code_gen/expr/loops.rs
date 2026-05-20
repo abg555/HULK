@@ -40,7 +40,7 @@ impl<'ctx> CodeGenerator<'ctx> {
             .map_err(|e| e.to_string())?;
 
         self.builder.position_at_end(after_block);
-        let default_value = self.default_value_for_kind(result_kind);
+        let default_value = self.default_value_for_kind(result_kind)?;
 
         let phi = match result_kind {
             ValueKind::Number => {
@@ -64,6 +64,30 @@ impl<'ctx> CodeGenerator<'ctx> {
                     (&default_value.into_bool()?, current_block),
                 ]);
                 CodegenValue::Bool(phi.as_basic_value().into_int_value())
+            }
+            ValueKind::String => {
+                let i8_ptr_type = self.context.i8_type().ptr_type(inkwell::AddressSpace::default());
+                let phi = self
+                    .builder
+                    .build_phi(i8_ptr_type, "whiletmp_str")
+                    .map_err(|e| e.to_string())?;
+                phi.add_incoming(&[
+                    (&body_value.into_string()?, body_block),
+                    (&default_value.into_string()?, current_block),
+                ]);
+                CodegenValue::String(phi.as_basic_value().into_pointer_value())
+            }
+            ValueKind::Object => {
+                let i8_ptr_type = self.context.i8_type().ptr_type(inkwell::AddressSpace::default());
+                let phi = self
+                    .builder
+                    .build_phi(i8_ptr_type, "whiletmp_obj")
+                    .map_err(|e| e.to_string())?;
+                phi.add_incoming(&[
+                    (&body_value.into_object()?, body_block),
+                    (&default_value.into_object()?, current_block),
+                ]);
+                CodegenValue::Object(phi.as_basic_value().into_pointer_value())
             }
         };
 
@@ -171,7 +195,7 @@ impl<'ctx> CodeGenerator<'ctx> {
 
         self.builder.position_at_end(after_block);
         let result_kind = self.value_kind_for_expr(&for_expr.body, analysis)?;
-        let default_value = self.default_value_for_kind(result_kind);
+        let default_value = self.default_value_for_kind(result_kind)?;
 
         let phi = match result_kind {
             ValueKind::Number => {
@@ -195,6 +219,30 @@ impl<'ctx> CodeGenerator<'ctx> {
                     (&default_value.into_bool()?, current_block),
                 ]);
                 CodegenValue::Bool(phi.as_basic_value().into_int_value())
+            }
+            ValueKind::String => {
+                let i8_ptr_type = self.context.i8_type().ptr_type(inkwell::AddressSpace::default());
+                let phi = self
+                    .builder
+                    .build_phi(i8_ptr_type, "fortmp_str")
+                    .map_err(|e| e.to_string())?;
+                phi.add_incoming(&[
+                    (&body_value.into_string()?, body_block),
+                    (&default_value.into_string()?, current_block),
+                ]);
+                CodegenValue::String(phi.as_basic_value().into_pointer_value())
+            }
+            ValueKind::Object => {
+                let i8_ptr_type = self.context.i8_type().ptr_type(inkwell::AddressSpace::default());
+                let phi = self
+                    .builder
+                    .build_phi(i8_ptr_type, "fortmp_obj")
+                    .map_err(|e| e.to_string())?;
+                phi.add_incoming(&[
+                    (&body_value.into_object()?, body_block),
+                    (&default_value.into_object()?, current_block),
+                ]);
+                CodegenValue::Object(phi.as_basic_value().into_pointer_value())
             }
         };
 

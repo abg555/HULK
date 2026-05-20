@@ -1,7 +1,7 @@
 use crate::ast::{AssignExpr, LetExpr, KindExpr};
 use crate::semantic::SemanticAnalysis;
 
-use super::super::{CodegenValue, CodeGenerator, ValueKind, VarInfo};
+use super::super::{CodegenValue, CodeGenerator, VarInfo};
 
 impl<'ctx> CodeGenerator<'ctx> {
     pub(super) fn lower_let(
@@ -13,28 +13,9 @@ impl<'ctx> CodeGenerator<'ctx> {
 
         for binding in &let_expr.bindings {
             let value = self.lower_expr(&binding.initializer, analysis)?;
-            let (ptr, kind) = match value {
-                CodegenValue::Number(number) => {
-                    let ptr = self
-                        .builder
-                        .build_alloca(self.f64_type, &binding.name)
-                        .map_err(|e| e.to_string())?;
-                    self.builder
-                        .build_store(ptr, number)
-                        .map_err(|e| e.to_string())?;
-                    (ptr, ValueKind::Number)
-                }
-                CodegenValue::Bool(bool_value) => {
-                    let ptr = self
-                        .builder
-                        .build_alloca(self.bool_type, &binding.name)
-                        .map_err(|e| e.to_string())?;
-                    self.builder
-                        .build_store(ptr, bool_value)
-                        .map_err(|e| e.to_string())?;
-                    (ptr, ValueKind::Bool)
-                }
-            };
+            let kind = value.kind();
+            let ptr = self.alloca_for_kind(&kind, &binding.name)?;
+            self.store_value(ptr, value)?;
 
             self.insert_var(
                 binding.name.clone(),
@@ -71,19 +52,7 @@ impl<'ctx> CodeGenerator<'ctx> {
             ));
         }
 
-        match value {
-            CodegenValue::Number(number) => {
-                self.builder
-                    .build_store(info.ptr, number)
-                    .map_err(|e| e.to_string())?;
-                Ok(CodegenValue::Number(number))
-            }
-            CodegenValue::Bool(bool_value) => {
-                self.builder
-                    .build_store(info.ptr, bool_value)
-                    .map_err(|e| e.to_string())?;
-                Ok(CodegenValue::Bool(bool_value))
-            }
-        }
+        self.store_value(info.ptr, value)?;
+        self.load_value(&info.kind, info.ptr, &format!("reload_{}", variable.name))
     }
 }

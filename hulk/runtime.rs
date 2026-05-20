@@ -1,0 +1,54 @@
+use std::ffi::CString;
+use std::os::raw::c_char;
+
+#[unsafe(no_mangle)]
+pub extern "C" fn hulk_concat(left: *const c_char, right: *const c_char) -> *mut c_char {
+    unsafe {
+        let left = if left.is_null() {
+            ""
+        } else {
+            std::ffi::CStr::from_ptr(left).to_str().unwrap_or("")
+        };
+        let right = if right.is_null() {
+            ""
+        } else {
+            std::ffi::CStr::from_ptr(right).to_str().unwrap_or("")
+        };
+
+        CString::new(format!("{}{}", left, right))
+            .unwrap_or_else(|_| CString::new("").unwrap())
+            .into_raw()
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn hulk_concat_full(left: *const c_char, right: *const c_char) -> *mut c_char {
+    unsafe {
+        let left = if left.is_null() {
+            ""
+        } else {
+            std::ffi::CStr::from_ptr(left).to_str().unwrap_or("")
+        };
+        let right = if right.is_null() {
+            ""
+        } else {
+            std::ffi::CStr::from_ptr(right).to_str().unwrap_or("")
+        };
+
+        CString::new(format!("{} {}", left, right))
+            .unwrap_or_else(|_| CString::new("").unwrap())
+            .into_raw()
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn hulk_rand() -> f64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.subsec_nanos())
+        .unwrap_or(0);
+
+    (nanos as f64) / 1_000_000_000.0
+}

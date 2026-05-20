@@ -5,6 +5,7 @@ mod if_else;
 mod let_assign;
 mod literals;
 mod loops;
+mod objects;
 mod unary;
 
 use crate::ast::{Expr, KindExpr};
@@ -32,6 +33,8 @@ impl<'ctx> CodeGenerator<'ctx> {
             KindExpr::Assign(assign) => self.lower_assign(assign, analysis),
             KindExpr::Block(block) => self.lower_block(block, analysis),
             KindExpr::Call(call) => self.lower_call(call, analysis),
+            KindExpr::New(new_expr) => self.lower_new(new_expr, analysis),
+            KindExpr::MemberAccess(member) => self.lower_member_access(member, analysis),
             KindExpr::If(if_expr) => self.lower_if(if_expr, analysis),
             KindExpr::While(while_expr) => self.lower_while(while_expr, analysis),
             KindExpr::For(for_expr) => self.lower_for(for_expr, analysis),

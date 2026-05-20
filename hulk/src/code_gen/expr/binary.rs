@@ -72,7 +72,8 @@ impl<'ctx> CodeGenerator<'ctx> {
             BinaryOperator::GreaterEqual => self.build_float_compare(FloatPredicate::OGE, left, right),
             BinaryOperator::And => self.build_bool_op("andtmp", left, right, true),
             BinaryOperator::Or => self.build_bool_op("ortmp", left, right, false),
-            _ => Err("Operador binario no soportado en esta fase".to_string()),
+            BinaryOperator::Concat => self.build_string_concat(left, right),
+            BinaryOperator::FullConcat => self.build_string_concat_full(left, right),
         }
     }
 
@@ -142,5 +143,106 @@ impl<'ctx> CodeGenerator<'ctx> {
             .f64_type
             .fn_type(&[self.f64_type.into(), self.f64_type.into()], false);
         self.module.add_function("llvm.pow.f64", fn_type, None)
+    }
+
+    fn build_string_concat(
+        &self,
+        left: CodegenValue<'ctx>,
+        right: CodegenValue<'ctx>,
+    ) -> Result<CodegenValue<'ctx>, String> {
+        // Determine operand types and convert as needed
+        let left_str = match left {
+            CodegenValue::String(s) => s,
+            CodegenValue::Number(n) => {
+                // number @ ... -> convert number to string
+                let printf_fn = self.get_sprintf_function();
+                let fmt = self
+                    .builder
+                    .build_global_string_ptr("%f", "num_fmt")
+                    .map_err(|e| e.to_string())?;
+                
+                // Allocate buffer for formatted number (32 bytes should be enough)
+                let buffer = self
+                    .builder
+                    .build_array_alloca(self.context.i8_type(), self.context.i32_type().const_int(32, false), "num_buffer")
+                    .map_err(|e| e.to_string())?;
+                
+                self.builder
+                    .build_call(printf_fn, &[buffer.into(), fmt.as_pointer_value().into(), n.into()], "sprintf_num")
+                    .map_err(|e| e.to_string())?;
+                
+                buffer
+            },
+            _ => return Err("Se esperaba string o numero para concatenacion".to_string()),
+        };
+
+        let right_str = match right {
+            CodegenValue::String(s) => s,
+            CodegenValue::Number(n) => {
+                // ... @ number -> convert number to string
+                let printf_fn = self.get_sprintf_function();
+                let fmt = self
+                    .builder
+                    .build_global_string_ptr("%f", "num_fmt")
+                    .map_err(|e| e.to_string())?;
+                
+                let buffer = self
+                    .builder
+                    .build_array_alloca(self.context.i8_type(), self.context.i32_type().const_int(32, false), "num_buffer")
+                    .map_err(|e| e.to_string())?;
+                
+                self.builder
+                    .build_call(printf_fn, &[buffer.into(), fmt.as_pointer_value().into(), n.into()], "sprintf_num")
+                    .map_err(|e| e.to_string())?;
+                
+                buffer
+            },
+            _ => return Err("Se esperaba string o numero para concatenacion".to_string()),
+        };
+
+        let concat_fn = self.get_concat_function();
+        let result = self
+            .builder
+            .build_call(concat_fn, &[left_str.into(), right_str.into()], "concat")
+            .map_err(|e| e.to_string())?
+            .try_as_basic_value()
+            .left()
+            .ok_or_else(|| "concat no devolvio un valor".to_string())?
+            .into_pointer_value();
+
+        Ok(CodegenValue::String(result))
+    }
+
+    fn build_string_concat_full(
+        &self,
+        left: CodegenValue<'ctx>,
+        right: CodegenValue<'ctx>,
+    ) -> Result<CodegenValue<'ctx>, String> {
+        // @@ es lo mismo que @ pero agrega espacio entre los strings
+        // Por ahora lo hacemos igual a @, después podemos agregar la función concat_with_space
+        self.build_string_concat(left, right)
+    }
+
+    fn get_sprintf_function(&self) -> inkwell::values::FunctionValue<'ctx> {
+        if let Some(function) = self.module.get_function("sprintf") {
+            return function;
+        }
+
+        let i8_ptr_type = self.context.i8_type().ptr_type(inkwell::AddressSpace::default());
+        let fn_type = self.context.i32_type().fn_type(
+            &[i8_ptr_type.into(), i8_ptr_type.into(), self.f64_type.into()],
+            false,
+        );
+        self.module.add_function("sprintf", fn_type, None)
+    }
+
+    fn get_concat_function(&self) -> inkwell::values::FunctionValue<'ctx> {
+        if let Some(function) = self.module.get_function("hulk_concat") {
+            return function;
+        }
+
+        let i8_ptr_type = self.context.i8_type().ptr_type(inkwell::AddressSpace::default());
+        let fn_type = i8_ptr_type.fn_type(&[i8_ptr_type.into(), i8_ptr_type.into()], false);
+        self.module.add_function("hulk_concat", fn_type, None)
     }
 }

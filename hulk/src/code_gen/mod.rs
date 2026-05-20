@@ -1,14 +1,14 @@
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::Module;
-use inkwell::types::{FloatType, IntType};
+use inkwell::types::{BasicTypeEnum, FloatType, IntType, StructType};
 use inkwell::values::{FloatValue, IntValue, PointerValue};
 use std::collections::HashMap;
 
 mod expr;
 mod functions;
 
-use crate::ast::{Item, Program};
+use crate::ast::{Item, Program, TypeDecl};
 use crate::semantic::SemanticAnalysis;
 use crate::semantic::types::SemanticType;
 
@@ -21,6 +21,8 @@ pub struct CodeGenerator<'ctx> {
     scopes: Vec<HashMap<String, VarInfo<'ctx>>>,
     tmp_counter: u64,
     functions: HashMap<String, FunctionInfo<'ctx>>,
+    type_decls: HashMap<String, TypeDecl>,
+    struct_types: HashMap<String, StructType<'ctx>>,
 }
 
 #[derive(Clone, Debug)]
@@ -34,12 +36,16 @@ pub struct FunctionInfo<'ctx> {
 pub enum ValueKind {
     Number,
     Bool,
+    String,
+    Object,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub enum CodegenValue<'ctx> {
     Number(FloatValue<'ctx>),
     Bool(IntValue<'ctx>),
+    String(PointerValue<'ctx>),
+    Object(PointerValue<'ctx>),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -53,20 +59,36 @@ impl<'ctx> CodegenValue<'ctx> {
         match self {
             CodegenValue::Number(_) => ValueKind::Number,
             CodegenValue::Bool(_) => ValueKind::Bool,
+            CodegenValue::String(_) => ValueKind::String,
+            CodegenValue::Object(_) => ValueKind::Object,
         }
     }
 
     pub fn into_number(self) -> Result<FloatValue<'ctx>, String> {
         match self {
             CodegenValue::Number(value) => Ok(value),
-            CodegenValue::Bool(_) => Err("Se esperaba Number".to_string()),
+            _ => Err("Se esperaba Number".to_string()),
         }
     }
 
     pub fn into_bool(self) -> Result<IntValue<'ctx>, String> {
         match self {
             CodegenValue::Bool(value) => Ok(value),
-            CodegenValue::Number(_) => Err("Se esperaba Boolean".to_string()),
+            _ => Err("Se esperaba Boolean".to_string()),
+        }
+    }
+
+    pub fn into_string(self) -> Result<PointerValue<'ctx>, String> {
+        match self {
+            CodegenValue::String(value) => Ok(value),
+            _ => Err("Se esperaba String".to_string()),
+        }
+    }
+
+    pub fn into_object(self) -> Result<PointerValue<'ctx>, String> {
+        match self {
+            CodegenValue::Object(value) => Ok(value),
+            _ => Err("Se esperaba Object".to_string()),
         }
     }
 }
@@ -82,6 +104,8 @@ impl<'ctx> CodeGenerator<'ctx> {
             scopes: vec![HashMap::new()],
             tmp_counter: 0,
             functions: HashMap::new(),
+            type_decls: HashMap::new(),
+            struct_types: HashMap::new(),
         }
     }
 
@@ -94,6 +118,8 @@ impl<'ctx> CodeGenerator<'ctx> {
         program: &Program,
         analysis: &SemanticAnalysis,
     ) -> Result<(), String> {
+        self.collect_type_decls(program);
+        self.prepare_object_types(analysis)?;
         self.declare_functions(program, analysis)?;
         self.define_functions(program, analysis)?;
 
@@ -113,7 +139,10 @@ impl<'ctx> CodeGenerator<'ctx> {
         self.builder.position_at_end(block);
 
         let value = self.lower_expr(expr, analysis)?;
-        let number = value.into_number()?;
+        let number = match value {
+            CodegenValue::Number(number) => number,
+            _ => self.f64_type.const_float(0.0),
+        };
         self.builder
             .build_return(Some(&number))
             .map_err(|e| e.to_string())?;
@@ -151,6 +180,54 @@ impl<'ctx> CodeGenerator<'ctx> {
         name
     }
 
+    pub(super) fn collect_type_decls(&mut self, program: &Program) {
+        self.type_decls = program
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Type(typ) => Some((typ.name.clone(), typ.clone())),
+                _ => None,
+            })
+            .collect();
+    }
+
+    pub(super) fn prepare_object_types(&mut self, analysis: &SemanticAnalysis) -> Result<(), String> {
+        self.struct_types.clear();
+
+        for name in self.type_decls.keys() {
+            let struct_type = self.context.opaque_struct_type(&format!("obj.{}", name));
+            self.struct_types.insert(name.clone(), struct_type);
+        }
+
+        for (name, decl) in &self.type_decls {
+            let shape = analysis
+                .type_shapes
+                .get(name)
+                .ok_or_else(|| format!("No se encontro la forma semantica del tipo {}", name))?;
+
+            let field_types = decl
+                .fields
+                .iter()
+                .map(|field| {
+                    let semantic_type = shape.fields.get(&field.name).ok_or_else(|| {
+                        format!("No se encontro el tipo del campo {} en {}", field.name, name)
+                    })?;
+
+                    self.basic_type_for_semantic(semantic_type)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+
+            let struct_type = self
+                .struct_types
+                .get(name)
+                .copied()
+                .ok_or_else(|| format!("No se encontro el struct LLVM para {}", name))?;
+            struct_type.set_body(&field_types, false);
+        }
+
+        Ok(())
+    }
+
     pub(super) fn value_kind_for_expr(
         &self,
         expr: &crate::ast::Expr,
@@ -164,14 +241,152 @@ impl<'ctx> CodeGenerator<'ctx> {
         match kind {
             SemanticType::Number => Ok(ValueKind::Number),
             SemanticType::Boolean => Ok(ValueKind::Bool),
-            _ => Err("Tipo no soportado en codegen".to_string()),
+            SemanticType::String => Ok(ValueKind::String),
+            SemanticType::Custom(_) => Ok(ValueKind::Object),
+            _ => Err(format!("Tipo no soportado en codegen: {:?} -> {}", expr.id, kind)),
         }
     }
 
-    pub(super) fn default_value_for_kind(&self, kind: ValueKind) -> CodegenValue<'ctx> {
+    pub(super) fn default_value_for_kind(&self, kind: ValueKind) -> Result<CodegenValue<'ctx>, String> {
         match kind {
-            ValueKind::Number => CodegenValue::Number(self.f64_type.const_float(0.0)),
-            ValueKind::Bool => CodegenValue::Bool(self.bool_type.const_int(0, false)),
+            ValueKind::Number => Ok(CodegenValue::Number(self.f64_type.const_float(0.0))),
+            ValueKind::Bool => Ok(CodegenValue::Bool(self.bool_type.const_int(0, false))),
+            ValueKind::String => {
+                let empty_str = self
+                    .builder
+                    .build_global_string_ptr("", "empty_str")
+                    .unwrap()
+                    .as_pointer_value();
+                Ok(CodegenValue::String(empty_str))
+            }
+            ValueKind::Object => Ok(CodegenValue::Object(
+                self.context
+                    .i8_type()
+                    .ptr_type(inkwell::AddressSpace::default())
+                    .const_null(),
+            )),
+        }
+    }
+
+    pub(super) fn basic_type_for_kind(
+        &self,
+        kind: &ValueKind,
+    ) -> Result<BasicTypeEnum<'ctx>, String> {
+        match kind {
+            ValueKind::Number => Ok(self.f64_type.into()),
+            ValueKind::Bool => Ok(self.bool_type.into()),
+            ValueKind::String | ValueKind::Object => Ok(
+                self.context
+                    .i8_type()
+                    .ptr_type(inkwell::AddressSpace::default())
+                    .into(),
+            ),
+        }
+    }
+
+    pub(super) fn basic_type_for_semantic(
+        &self,
+        typ: &SemanticType,
+    ) -> Result<BasicTypeEnum<'ctx>, String> {
+        match typ {
+            SemanticType::Number => Ok(self.f64_type.into()),
+            SemanticType::Boolean => Ok(self.bool_type.into()),
+            SemanticType::String => Ok(
+                self.context
+                    .i8_type()
+                    .ptr_type(inkwell::AddressSpace::default())
+                    .into(),
+            ),
+            SemanticType::Custom(_) => Ok(
+                self.context
+                    .i8_type()
+                    .ptr_type(inkwell::AddressSpace::default())
+                    .into(),
+            ),
+            _ => Err(format!("Tipo no soportado en codegen: {}", typ)),
+        }
+    }
+
+    pub(super) fn object_struct_type(&self, type_name: &str) -> Result<StructType<'ctx>, String> {
+        self.struct_types
+            .get(type_name)
+            .copied()
+            .ok_or_else(|| format!("Tipo de objeto no preparado: {}", type_name))
+    }
+
+    pub(super) fn alloca_for_kind(
+        &self,
+        kind: &ValueKind,
+        name: &str,
+    ) -> Result<PointerValue<'ctx>, String> {
+        let ty = self.basic_type_for_kind(kind)?;
+        self.builder.build_alloca(ty, name).map_err(|e| e.to_string())
+    }
+
+    pub(super) fn load_value(
+        &self,
+        kind: &ValueKind,
+        ptr: PointerValue<'ctx>,
+        name: &str,
+    ) -> Result<CodegenValue<'ctx>, String> {
+        match kind {
+            ValueKind::Number => Ok(CodegenValue::Number(
+                self.builder
+                    .build_load(self.f64_type, ptr, name)
+                    .map_err(|e| e.to_string())?
+                    .into_float_value(),
+            )),
+            ValueKind::Bool => Ok(CodegenValue::Bool(
+                self.builder
+                    .build_load(self.bool_type, ptr, name)
+                    .map_err(|e| e.to_string())?
+                    .into_int_value(),
+            )),
+            ValueKind::String => {
+                let i8_ptr_type = self.context.i8_type().ptr_type(inkwell::AddressSpace::default());
+                Ok(CodegenValue::String(
+                    self.builder
+                        .build_load(i8_ptr_type, ptr, name)
+                        .map_err(|e| e.to_string())?
+                        .into_pointer_value(),
+                ))
+            }
+            ValueKind::Object => {
+                let i8_ptr_type = self.context.i8_type().ptr_type(inkwell::AddressSpace::default());
+                Ok(CodegenValue::Object(
+                    self.builder
+                        .build_load(i8_ptr_type, ptr, name)
+                        .map_err(|e| e.to_string())?
+                        .into_pointer_value(),
+                ))
+            }
+        }
+    }
+
+    pub(super) fn store_value(
+        &self,
+        ptr: PointerValue<'ctx>,
+        value: CodegenValue<'ctx>,
+    ) -> Result<(), String> {
+        match value {
+            CodegenValue::Number(number) => {
+                self.builder
+                    .build_store(ptr, number)
+                    .map_err(|e| e.to_string())?;
+                Ok(())
+            }
+            CodegenValue::Bool(boolean) => {
+                self.builder
+                    .build_store(ptr, boolean)
+                    .map_err(|e| e.to_string())?;
+                Ok(())
+            }
+            CodegenValue::String(string) | CodegenValue::Object(string) => {
+                self.builder
+                    .build_store(ptr, string)
+                    .map_err(|e| e.to_string())?;
+                Ok(())
+            }
         }
     }
 
@@ -182,7 +397,9 @@ impl<'ctx> CodeGenerator<'ctx> {
         match typ {
             SemanticType::Number => Ok(ValueKind::Number),
             SemanticType::Boolean => Ok(ValueKind::Bool),
-            _ => Err("Tipo no soportado en codegen".to_string()),
+            SemanticType::String => Ok(ValueKind::String),
+            SemanticType::Custom(_) => Ok(ValueKind::Object),
+            _ => Err(format!("Tipo no soportado en codegen: {}", typ)),
         }
     }
 }

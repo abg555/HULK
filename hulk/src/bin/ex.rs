@@ -4,9 +4,9 @@ use hulk::code_gen::CodeGenerator;
 use hulk::{parse_program, SemanticAnalyzer};
 
 fn main() {
-   let input = "function add(x: Number, y: Number): Number => x + y;
+    let input = "function math_combo(x: Number): Number => sqrt(x) + sin(90 / 2) + cos(0) + log(2, 8) + exp(0);
 
-add(2, 3)";
+math_combo(16)";
 
     let program = match parse_program(input) {
         Ok(program) => program,
@@ -27,6 +27,12 @@ add(2, 3)";
             return;
         }
     };
+
+    // Dump inferred types for debugging codegen errors
+    eprintln!("Inferred types:");
+    for (node, typ) in &analysis.inferred_types {
+        eprintln!("  {:?} -> {}", node, typ);
+    }
 
     let context = Context::create();
     let mut codegen = CodeGenerator::new(&context, "hulk_test");
