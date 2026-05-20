@@ -88,6 +88,39 @@ fn accepts_prelude_print_and_range() {
 }
 
 #[test]
+fn accepts_prelude_math_constants() {
+    let input = "print(PI + E)";
+
+    let result = analyze_program(input);
+    assert!(
+        result.is_ok(),
+        "expected builtin math constants to be valid, got: {result:?}"
+    );
+}
+
+#[test]
+fn accepts_prelude_pi_constant() {
+    let input = "print(PI * 2)";
+
+    let result = analyze_program(input);
+    assert!(
+        result.is_ok(),
+        "expected builtin PI constant to be valid, got: {result:?}"
+    );
+}
+
+#[test]
+fn accepts_prelude_e_constant() {
+    let input = "let x = E in print(x)";
+
+    let result = analyze_program(input);
+    assert!(
+        result.is_ok(),
+        "expected builtin E constant to be valid, got: {result:?}"
+    );
+}
+
+#[test]
 fn reports_range_type_errors() {
     let input = "range(\"0\", 5)";
     let diagnostics = analyze_program(input).expect_err("expected semantic errors");
