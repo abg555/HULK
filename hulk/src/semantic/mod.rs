@@ -832,6 +832,9 @@ impl SemanticAnalyzer {
         );
         self.define_builtin_function("rand", vec![], SemanticType::Number);
 
+        self.define_builtin_constant("PI", SemanticType::Number);
+        self.define_builtin_constant("E", SemanticType::Number);
+
         // Predefined Iterable protocol
         self.define_builtin_protocol("Iterable");
     }
@@ -873,13 +876,21 @@ impl SemanticAnalyzer {
             kind,
             typ,
         };
-
         if !self.symbols.define(symbol) {
             self.diagnostics.error(
                 format!("Redefinicion de simbolo top-level: {}", name),
                 Span { start: 0, end: 0 },
             );
         }
+    }
+
+    /// Define una constante integrada en la tabla de simbolos.
+    fn define_builtin_constant(&mut self, name: &str, typ: SemanticType) {
+        let _ = self.symbols.define(Symbol {
+            name: name.to_string(),
+            kind: SymbolKind::Variable,
+            typ,
+        });
     }
 
     /// Convierte una referencia de tipo opcional sin diagnosticos adicionales.
