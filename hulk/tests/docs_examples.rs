@@ -83,10 +83,11 @@ function operate(x, y) {
     let ctx = analyze_program(src).expect("expected semantic success");
     let sym = ctx.global_symbols.get("operate").expect("operate symbol defined");
     match &sym.typ {
-        SemanticType::Function(params, _ret) => {
+        SemanticType::Function(params, ret) => {
             assert_eq!(params.len(), 2);
             assert_eq!(params[0], SemanticType::Number);
             assert_eq!(params[1], SemanticType::Number);
+            assert_eq!(**ret, SemanticType::Number, "expected return type Number for operate");
         }
         other => panic!("expected operate to be a function, got {:?}", other),
     }
