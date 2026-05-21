@@ -234,6 +234,8 @@ impl SemanticAnalyzer {
                 SemanticType::Unknown
             }
             KindExpr::Let(let_expr) => {
+                // Implement `let a = x, b = y in ...` as nested lets evaluated left-to-right.
+                // Create an initial let scope that will be the outermost of the nested chain.
                 self.enter_scope();
                 let body_inferable = let_expr
                     .bindings
@@ -242,7 +244,9 @@ impl SemanticAnalyzer {
                     .map(|binding| binding.name.clone())
                     .collect::<HashSet<_>>();
 
-                for binding in &let_expr.bindings {
+                let mut entered_scopes = 1usize; // we entered one scope above
+
+                for (idx, binding) in let_expr.bindings.iter().enumerate() {
                     let initializer_guaranteed = self.guarantees_value(&binding.initializer);
                     if !initializer_guaranteed {
                         self.diagnostics.error(
@@ -254,6 +258,8 @@ impl SemanticAnalyzer {
                         );
                     }
 
+                    // Evaluate initializer in the current (innermost) scope so it can see
+                    // previously-defined bindings (they live in outer scopes of this chain).
                     let init_ty = self.check_expr(&binding.initializer);
                     let declared =
                         self.resolve_type_ref(binding.types.as_ref(), binding.initializer.span);
@@ -287,6 +293,8 @@ impl SemanticAnalyzer {
                             binding.initializer.span,
                         );
                     }
+
+                    // Define the binding in the current scope (so it's visible to inner scopes).
                     self.define_local_with_state(
                         &binding.name,
                         SymbolKind::Variable,
@@ -294,9 +302,23 @@ impl SemanticAnalyzer {
                         binding.initializer.span,
                         initializer_guaranteed,
                     );
+
+                    // If there are more bindings remaining, create a new inner scope so the
+                    // next binding will live in an inner scope that shadows the current one.
+                    if idx + 1 < let_expr.bindings.len() {
+                        self.enter_scope();
+                        entered_scopes += 1;
+                    }
                 }
+
+                // Body is evaluated in the innermost scope created above.
                 let body_ty = self.check_expr(&let_expr.body);
-                self.exit_scope();
+
+                // Exit all scopes we entered for this let expression.
+                for _ in 0..entered_scopes {
+                    self.exit_scope();
+                }
+
                 body_ty
             }
             KindExpr::Block(block) => {
