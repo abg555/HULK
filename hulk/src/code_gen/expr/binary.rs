@@ -154,24 +154,20 @@ impl<'ctx> CodeGenerator<'ctx> {
         let left_str = match left {
             CodegenValue::String(s) => s,
             CodegenValue::Number(n) => {
-                // number @ ... -> convert number to string
-                let printf_fn = self.get_sprintf_function();
-                let fmt = self
+                // number @ ... -> convert number to string using runtime helper
+                let fmt_fn = self.get_format_number_function();
+                let call = self
                     .builder
-                    .build_global_string_ptr("%f", "num_fmt")
+                    .build_call(fmt_fn, &[n.into()], "format_num")
                     .map_err(|e| e.to_string())?;
-                
-                // Allocate buffer for formatted number (32 bytes should be enough)
-                let buffer = self
-                    .builder
-                    .build_array_alloca(self.context.i8_type(), self.context.i32_type().const_int(32, false), "num_buffer")
-                    .map_err(|e| e.to_string())?;
-                
-                self.builder
-                    .build_call(printf_fn, &[buffer.into(), fmt.as_pointer_value().into(), n.into()], "sprintf_num")
-                    .map_err(|e| e.to_string())?;
-                
-                buffer
+
+                let ptr = call
+                    .try_as_basic_value()
+                    .left()
+                    .ok_or_else(|| "format_number no devolvio un valor".to_string())?
+                    .into_pointer_value();
+
+                ptr
             },
             _ => return Err("Se esperaba string o numero para concatenacion".to_string()),
         };
@@ -179,23 +175,20 @@ impl<'ctx> CodeGenerator<'ctx> {
         let right_str = match right {
             CodegenValue::String(s) => s,
             CodegenValue::Number(n) => {
-                // ... @ number -> convert number to string
-                let printf_fn = self.get_sprintf_function();
-                let fmt = self
+                // ... @ number -> convert number to string using runtime helper
+                let fmt_fn = self.get_format_number_function();
+                let call = self
                     .builder
-                    .build_global_string_ptr("%f", "num_fmt")
+                    .build_call(fmt_fn, &[n.into()], "format_num")
                     .map_err(|e| e.to_string())?;
-                
-                let buffer = self
-                    .builder
-                    .build_array_alloca(self.context.i8_type(), self.context.i32_type().const_int(32, false), "num_buffer")
-                    .map_err(|e| e.to_string())?;
-                
-                self.builder
-                    .build_call(printf_fn, &[buffer.into(), fmt.as_pointer_value().into(), n.into()], "sprintf_num")
-                    .map_err(|e| e.to_string())?;
-                
-                buffer
+
+                let ptr = call
+                    .try_as_basic_value()
+                    .left()
+                    .ok_or_else(|| "format_number no devolvio un valor".to_string())?
+                    .into_pointer_value();
+
+                ptr
             },
             _ => return Err("Se esperaba string o numero para concatenacion".to_string()),
         };
@@ -244,5 +237,15 @@ impl<'ctx> CodeGenerator<'ctx> {
         let i8_ptr_type = self.context.i8_type().ptr_type(inkwell::AddressSpace::default());
         let fn_type = i8_ptr_type.fn_type(&[i8_ptr_type.into(), i8_ptr_type.into()], false);
         self.module.add_function("hulk_concat", fn_type, None)
+    }
+
+    fn get_format_number_function(&self) -> inkwell::values::FunctionValue<'ctx> {
+        if let Some(function) = self.module.get_function("hulk_format_number") {
+            return function;
+        }
+
+        let i8_ptr_type = self.context.i8_type().ptr_type(inkwell::AddressSpace::default());
+        let fn_type = i8_ptr_type.fn_type(&[self.f64_type.into()], false);
+        self.module.add_function("hulk_format_number", fn_type, None)
     }
 }

@@ -36,14 +36,18 @@ impl SemanticAnalyzer {
                                 })
                         })
                         .collect::<Vec<_>>();
+
                     let resolved_return = if func.return_type.is_some() {
                         func.return_type
                             .as_ref()
                             .map(SemanticType::from_type_ref)
                             .unwrap_or(SemanticType::Unknown)
                     } else {
-                        self.infer_return_type(&func.body, func.body.span)
+                        // Use inferred param types as context so calls like `print(x)`
+                        // can propagate `x`'s type into the inferred return.
+                        self.infer_return_type_with_context(&func.body, func.body.span, &inferred)
                     };
+
                     self.inferred_function_params
                         .insert(func.name.clone(), inferred);
                     self.inferred_function_returns
@@ -71,7 +75,7 @@ impl SemanticAnalyzer {
                                 .map(SemanticType::from_type_ref)
                                 .unwrap_or(SemanticType::Unknown)
                         } else {
-                            self.infer_return_type(&method.body, method.body.span)
+                            self.infer_return_type_with_context(&method.body, method.body.span, &inferred)
                         };
                         method_return_map.insert(method.name.clone(), ret);
                     }
@@ -246,6 +250,103 @@ impl SemanticAnalyzer {
                 }
                 KindExpr::Array(_) => {
                     return_types.push(SemanticType::Vector(Box::new(SemanticType::Unknown)))
+                }
+                _ => return_types.push(SemanticType::Unknown),
+            }
+        }
+
+        if return_types.is_empty() {
+            return SemanticType::Unknown;
+        }
+
+        let first = return_types[0].clone();
+        let all_same = return_types.iter().all(|t| match (t, &first) {
+            (SemanticType::Number, SemanticType::Number) => true,
+            (SemanticType::String, SemanticType::String) => true,
+            (SemanticType::Boolean, SemanticType::Boolean) => true,
+            (SemanticType::Vector(_), SemanticType::Vector(_)) => true,
+            (SemanticType::Unknown, _) => true,
+            (_, SemanticType::Unknown) => true,
+            _ => false,
+        });
+
+        if all_same {
+            first
+        } else {
+            SemanticType::Unknown
+        }
+    }
+
+    /// Infer return type using a parameter-type context (useful when params were
+    /// previously inferred and are not yet installed globally). This allows
+    /// propagating the type of expressions like `print(x)` into the function
+    /// return when `x` is a parameter with a known inferred type.
+    pub(super) fn infer_return_type_with_context(
+        &self,
+        body: &Expr,
+        _span: Span,
+        param_types: &std::collections::HashMap<String, SemanticType>,
+    ) -> SemanticType {
+        let return_exprs = self.collect_return_expressions(body);
+
+        if return_exprs.is_empty() {
+            return SemanticType::Unknown;
+        }
+
+        let mut return_types = Vec::new();
+        for ret_expr in return_exprs {
+            match &ret_expr.kind {
+                KindExpr::Literal(lit) => match lit.value {
+                    LiteralValue::Number(_) => return_types.push(SemanticType::Number),
+                    LiteralValue::String(_) => return_types.push(SemanticType::String),
+                    LiteralValue::Bool(_) => return_types.push(SemanticType::Boolean),
+                },
+                KindExpr::Block(block) if block.expressions.is_empty() => {
+                    return_types.push(SemanticType::Boolean);
+                }
+                KindExpr::Array(_) => {
+                    return_types.push(SemanticType::Vector(Box::new(SemanticType::Unknown)))
+                }
+                KindExpr::Call(call) => {
+                    // Special-case: print(expr) should propagate expr's type
+                    if let KindExpr::Variable(var) = &call.callee.kind {
+                        if var.name == "print" {
+                            if let Some(arg) = call.arguments.get(0) {
+                                match &arg.kind {
+                                    KindExpr::Literal(lit) => match lit.value {
+                                        LiteralValue::Number(_) =>
+                                            return_types.push(SemanticType::Number),
+                                        LiteralValue::String(_) =>
+                                            return_types.push(SemanticType::String),
+                                        LiteralValue::Bool(_) =>
+                                            return_types.push(SemanticType::Boolean),
+                                    },
+                                    KindExpr::Variable(v) => {
+                                        if let Some(t) = param_types.get(&v.name) {
+                                            return_types.push(t.clone());
+                                        } else {
+                                            return_types.push(SemanticType::Unknown);
+                                        }
+                                    }
+                                    KindExpr::Binary(_) => {
+                                        // arithmetic ops produce numbers
+                                        return_types.push(SemanticType::Number)
+                                    }
+                                    _ => return_types.push(SemanticType::Unknown),
+                                }
+                                continue;
+                            }
+                        }
+
+                        // If call targets a user function whose return was already
+                        // inferred earlier, use that information.
+                        if let Some(inferred_ret) = self.inferred_function_returns.get(&var.name).cloned() {
+                            return_types.push(inferred_ret);
+                            continue;
+                        }
+                    }
+
+                    return_types.push(SemanticType::Unknown);
                 }
                 _ => return_types.push(SemanticType::Unknown),
             }

@@ -52,3 +52,12 @@ pub extern "C" fn hulk_rand() -> f64 {
 
     (nanos as f64) / 1_000_000_000.0
 }
+
+#[unsafe(no_mangle)]
+pub extern "C" fn hulk_format_number(n: f64) -> *mut c_char {
+    unsafe {
+        CString::new(format!("{}", n))
+            .unwrap_or_else(|_| CString::new("0").unwrap())
+            .into_raw()
+    }
+}

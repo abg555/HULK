@@ -56,3 +56,34 @@
 // function add4(x: Number): Number => add2(add2(x));
 
 // print(add4(10)) //14
+
+function operate(x, y) {
+    print(x + y);
+    print(x - y);
+    print(x * y);
+    print(x / y);
+}
+
+operate(10, 5) 
+
+// let number = 42, text = "The meaning of life is" in
+//     print(text @ number);
+
+// let number = 42 in
+//     let text = "The meaning of life is" in
+//         print(text @ number);
+
+// let number = 42 in (
+//     let text = "The meaning of life is" in (
+//             print(text @ number)
+//         )
+//     );        
+
+// let a = 7, a = 7 * 6 in print(a);
+
+// let a = 0 in
+//     let b = a := 1 in {
+//         print(a);
+//         print(b);
+//     };
+
