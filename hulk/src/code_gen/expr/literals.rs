@@ -26,6 +26,14 @@ impl<'ctx> CodeGenerator<'ctx> {
         &mut self,
         variable: &VariableExpr,
     ) -> Result<CodegenValue<'ctx>, String> {
+        match variable.name.as_str() {
+            "PI" | "pi" => {
+                return Ok(CodegenValue::Number(self.f64_type.const_float(std::f64::consts::PI)))
+            }
+            "E" => return Ok(CodegenValue::Number(self.f64_type.const_float(std::f64::consts::E))),
+            _ => {}
+        }
+
         let info = self
             .lookup_var(&variable.name)
             .ok_or_else(|| format!("Variable no definida: {}", variable.name))?;

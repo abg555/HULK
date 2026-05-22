@@ -121,7 +121,9 @@ impl<'ctx> CodeGenerator<'ctx> {
         self.collect_type_decls(program);
         self.prepare_object_types(analysis)?;
         self.declare_functions(program, analysis)?;
+        self.declare_methods(program, analysis)?;
         self.define_functions(program, analysis)?;
+        self.define_methods(program, analysis)?;
 
         let expr = program
             .items
@@ -191,6 +193,10 @@ impl<'ctx> CodeGenerator<'ctx> {
             .collect();
     }
 
+    pub(super) fn method_symbol_name(&self, type_name: &str, method_name: &str) -> String {
+        format!("{}.{}", type_name, method_name)
+    }
+
     pub(super) fn prepare_object_types(&mut self, analysis: &SemanticAnalysis) -> Result<(), String> {
         self.struct_types.clear();
 
@@ -199,23 +205,8 @@ impl<'ctx> CodeGenerator<'ctx> {
             self.struct_types.insert(name.clone(), struct_type);
         }
 
-        for (name, decl) in &self.type_decls {
-            let shape = analysis
-                .type_shapes
-                .get(name)
-                .ok_or_else(|| format!("No se encontro la forma semantica del tipo {}", name))?;
-
-            let field_types = decl
-                .fields
-                .iter()
-                .map(|field| {
-                    let semantic_type = shape.fields.get(&field.name).ok_or_else(|| {
-                        format!("No se encontro el tipo del campo {} en {}", field.name, name)
-                    })?;
-
-                    self.basic_type_for_semantic(semantic_type)
-                })
-                .collect::<Result<Vec<_>, _>>()?;
+        for name in self.type_decls.keys() {
+            let field_types = self.object_field_types(name, analysis)?;
 
             let struct_type = self
                 .struct_types
@@ -312,6 +303,114 @@ impl<'ctx> CodeGenerator<'ctx> {
             .get(type_name)
             .copied()
             .ok_or_else(|| format!("Tipo de objeto no preparado: {}", type_name))
+    }
+
+    pub(super) fn object_field_names(&self, type_name: &str) -> Result<Vec<String>, String> {
+        let decl = self
+            .type_decls
+            .get(type_name)
+            .ok_or_else(|| format!("Tipo no definido: {}", type_name))?;
+
+        let mut names = if let Some(parent) = &decl.parent {
+            if let SemanticType::Custom(parent_name) = SemanticType::from_type_ref(parent) {
+                self.object_field_names(&parent_name)?
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        };
+
+        names.extend(decl.fields.iter().map(|field| field.name.clone()));
+        Ok(names)
+    }
+
+    pub(super) fn object_field_types(
+        &self,
+        type_name: &str,
+        analysis: &SemanticAnalysis,
+    ) -> Result<Vec<BasicTypeEnum<'ctx>>, String> {
+        let mut field_types = Vec::new();
+        for field_name in self.object_field_names(type_name)? {
+            let semantic_type = self.object_field_semantic_type(type_name, &field_name, analysis)?;
+            field_types.push(self.basic_type_for_semantic(&semantic_type)?);
+        }
+
+        Ok(field_types)
+    }
+
+    pub(super) fn object_field_semantic_type(
+        &self,
+        type_name: &str,
+        field_name: &str,
+        analysis: &SemanticAnalysis,
+    ) -> Result<SemanticType, String> {
+        let decl = self
+            .type_decls
+            .get(type_name)
+            .ok_or_else(|| format!("Tipo no definido: {}", type_name))?;
+
+        if let Some(shape) = analysis.type_shapes.get(type_name)
+            && let Some(semantic_type) = shape.fields.get(field_name)
+        {
+            return Ok(semantic_type.clone());
+        }
+
+        if let Some(parent) = &decl.parent
+            && let SemanticType::Custom(parent_name) = SemanticType::from_type_ref(parent)
+        {
+            return self.object_field_semantic_type(&parent_name, field_name, analysis);
+        }
+
+        Err(format!("No se encontro el tipo del campo {} en {}", field_name, type_name))
+    }
+
+    pub(super) fn object_method_owner(
+        &self,
+        type_name: &str,
+        method_name: &str,
+        analysis: &SemanticAnalysis,
+    ) -> Result<String, String> {
+        if let Some(shape) = analysis.type_shapes.get(type_name)
+            && shape.methods.contains_key(method_name)
+        {
+            return Ok(type_name.to_string());
+        }
+
+        let decl = self
+            .type_decls
+            .get(type_name)
+            .ok_or_else(|| format!("Tipo no definido: {}", type_name))?;
+
+        if let Some(parent) = &decl.parent
+            && let SemanticType::Custom(parent_name) = SemanticType::from_type_ref(parent)
+        {
+            return self.object_method_owner(&parent_name, method_name, analysis);
+        }
+
+        Err(format!(
+            "No se encontro el metodo {} en {}",
+            method_name, type_name
+        ))
+    }
+
+    pub(super) fn object_method_semantic_type(
+        &self,
+        type_name: &str,
+        method_name: &str,
+        analysis: &SemanticAnalysis,
+    ) -> Result<SemanticType, String> {
+        let owner = self.object_method_owner(type_name, method_name, analysis)?;
+        let shape = analysis
+            .type_shapes
+            .get(&owner)
+            .ok_or_else(|| format!("Tipo no encontrado en analisis: {}", owner))?;
+
+        shape
+            .methods
+            .get(method_name)
+            .cloned()
+            .ok_or_else(|| format!("No se encontro el metodo {} en {}", method_name, owner))
     }
 
     pub(super) fn alloca_for_kind(

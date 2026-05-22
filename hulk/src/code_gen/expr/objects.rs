@@ -19,13 +19,6 @@ impl<'ctx> CodeGenerator<'ctx> {
             .cloned()
             .ok_or_else(|| format!("Tipo no definido: {}", new_expr.type_name))?;
 
-        if decl.parent.is_some() {
-            return Err(format!(
-                "Codegen de objetos todavia no soporta herencia para {}",
-                new_expr.type_name
-            ));
-        }
-
         if decl.param.len() != new_expr.arguments.len() {
             return Err(format!(
                 "Aridad invalida al construir {}: se esperaban {} argumentos y llegaron {}",
@@ -74,33 +67,14 @@ impl<'ctx> CodeGenerator<'ctx> {
             },
         );
 
-        for (param, arg_expr) in decl.param.iter().zip(new_expr.arguments.iter()) {
-            let value = self.lower_expr(arg_expr, analysis)?;
-            let slot = self.alloca_for_kind(&value.kind(), &param.name)?;
-            self.store_value(slot, value)?;
-            self.insert_var(
-                param.name.clone(),
-                VarInfo {
-                    ptr: slot,
-                    kind: value.kind(),
-                },
-            );
-        }
-
-        for field in &decl.fields {
-            let initializer = self.lower_expr(&field.initializer, analysis)?;
-            let field_index = self.field_index(&new_expr.type_name, &field.name)?;
-            let field_ptr = self
-                .builder
-                .build_struct_gep(
-                    object_struct,
-                    typed_ptr,
-                    field_index as u32,
-                    &format!("{}_field", field.name),
-                )
-                .map_err(|e| e.to_string())?;
-            self.store_value(field_ptr, initializer)?;
-        }
+        self.initialize_object_fields(
+            &new_expr.type_name,
+            &new_expr.type_name,
+            &new_expr.arguments,
+            analysis,
+            object_struct,
+            typed_ptr,
+        )?;
 
         self.exit_scope();
 
@@ -117,15 +91,8 @@ impl<'ctx> CodeGenerator<'ctx> {
         let object_value = self.lower_expr(&member.object, analysis)?.into_object()?;
         let typed_ptr = self.cast_object_ptr(&object_value, &object_type)?;
 
-        let shape = analysis
-            .type_shapes
-            .get(&object_type)
-            .ok_or_else(|| format!("No se encontro la forma del tipo {}", object_type))?;
-        let field_type = shape
-            .fields
-            .get(&member.field)
-            .ok_or_else(|| format!("El tipo {} no define el campo {}", object_type, member.field))?;
-        let field_kind = self.value_kind_from_semantic(field_type)?;
+        let field_type = self.object_field_semantic_type(&object_type, &member.field, analysis)?;
+        let field_kind = self.value_kind_from_semantic(&field_type)?;
         let field_index = self.field_index(&object_type, &member.field)?;
         let field_ptr = self
             .builder
@@ -140,7 +107,77 @@ impl<'ctx> CodeGenerator<'ctx> {
         self.load_value(&field_kind, field_ptr, &format!("load_{}", member.field))
     }
 
-    fn member_object_type(
+    fn initialize_object_fields(
+        &mut self,
+        concrete_type: &str,
+        type_name: &str,
+        arg_exprs: &[crate::ast::Expr],
+        analysis: &SemanticAnalysis,
+        object_struct: inkwell::types::StructType<'ctx>,
+        typed_ptr: PointerValue<'ctx>,
+    ) -> Result<(), String> {
+        let decl = self
+            .type_decls
+            .get(type_name)
+            .cloned()
+            .ok_or_else(|| format!("Tipo no definido: {}", type_name))?;
+
+        if decl.param.len() != arg_exprs.len() {
+            return Err(format!(
+                "Aridad invalida al construir {}: se esperaban {} argumentos y llegaron {}",
+                type_name,
+                decl.param.len(),
+                arg_exprs.len()
+            ));
+        }
+
+        for (param, arg_expr) in decl.param.iter().zip(arg_exprs.iter()) {
+            let value = self.lower_expr(arg_expr, analysis)?;
+            let slot = self.alloca_for_kind(&value.kind(), &param.name)?;
+            self.store_value(slot, value)?;
+            self.insert_var(
+                param.name.clone(),
+                VarInfo {
+                    ptr: slot,
+                    kind: value.kind(),
+                },
+            );
+        }
+
+        if let Some(parent) = &decl.parent {
+            let SemanticType::Custom(parent_name) = SemanticType::from_type_ref(parent) else {
+                return Err(format!("El padre de {} debe ser un tipo nombrado", type_name));
+            };
+
+            self.initialize_object_fields(
+                concrete_type,
+                &parent_name,
+                &decl.parent_arg,
+                analysis,
+                object_struct,
+                typed_ptr,
+            )?;
+        }
+
+        for field in &decl.fields {
+            let initializer = self.lower_expr(&field.initializer, analysis)?;
+            let field_index = self.field_index(concrete_type, &field.name)?;
+            let field_ptr = self
+                .builder
+                .build_struct_gep(
+                    object_struct,
+                    typed_ptr,
+                    field_index as u32,
+                    &format!("{}_field", field.name),
+                )
+                .map_err(|e| e.to_string())?;
+            self.store_value(field_ptr, initializer)?;
+        }
+
+        Ok(())
+    }
+
+    pub(super) fn member_object_type(
         &self,
         member: &MemberAccessExpr,
         analysis: &SemanticAnalysis,
@@ -156,14 +193,9 @@ impl<'ctx> CodeGenerator<'ctx> {
     }
 
     fn field_index(&self, type_name: &str, field_name: &str) -> Result<usize, String> {
-        let decl = self
-            .type_decls
-            .get(type_name)
-            .ok_or_else(|| format!("Tipo no definido: {}", type_name))?;
-
-        decl.fields
+        self.object_field_names(type_name)?
             .iter()
-            .position(|field| field.name == field_name)
+            .position(|name| name == field_name)
             .ok_or_else(|| format!("El tipo {} no define el campo {}", type_name, field_name))
     }
 

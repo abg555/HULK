@@ -12,20 +12,19 @@ impl<'ctx> CodeGenerator<'ctx> {
         call: &CallExpr,
         analysis: &SemanticAnalysis,
     ) -> Result<CodegenValue<'ctx>, String> {
-        let KindExpr::Variable(callee) = &call.callee.kind else {
-            return Err("Solo se soportan llamadas a funciones builtin".to_string());
-        };
-
-        match callee.name.as_str() {
-            "print" => self.lower_print(call, analysis),
-            "sqrt" => Ok(CodegenValue::Number(self.lower_unary_math(call, analysis, "llvm.sqrt.f64")?)),
-            "sin" => Ok(CodegenValue::Number(self.lower_unary_math(call, analysis, "llvm.sin.f64")?)),
-            "cos" => Ok(CodegenValue::Number(self.lower_unary_math(call, analysis, "llvm.cos.f64")?)),
-            "tan" => Ok(CodegenValue::Number(self.lower_tan(call, analysis)?)),
-            "exp" => Ok(CodegenValue::Number(self.lower_unary_math(call, analysis, "llvm.exp.f64")?)),
-            "log" => Ok(CodegenValue::Number(self.lower_log(call, analysis)?)),
-            "rand" => Ok(CodegenValue::Number(self.lower_rand(call)?)),
-            _ => self.lower_user_call(call, analysis, &callee.name),
+        match &call.callee.kind {
+            KindExpr::Variable(callee) => match callee.name.as_str() {
+                "print" => self.lower_print(call, analysis),
+                "sqrt" => Ok(CodegenValue::Number(self.lower_unary_math(call, analysis, "llvm.sqrt.f64")?)),
+                "sin" => Ok(CodegenValue::Number(self.lower_unary_math(call, analysis, "llvm.sin.f64")?)),
+                "cos" => Ok(CodegenValue::Number(self.lower_unary_math(call, analysis, "llvm.cos.f64")?)),
+                "exp" => Ok(CodegenValue::Number(self.lower_unary_math(call, analysis, "llvm.exp.f64")?)),
+                "log" => Ok(CodegenValue::Number(self.lower_log(call, analysis)?)),
+                "rand" => Ok(CodegenValue::Number(self.lower_rand(call)?)),
+                _ => self.lower_user_call(call, analysis, &callee.name),
+            },
+            KindExpr::MemberAccess(member) => self.lower_method_call(call, member, analysis),
+            _ => Err("Solo se soportan llamadas a funciones o metodos".to_string()),
         }
     }
 
@@ -40,15 +39,6 @@ impl<'ctx> CodeGenerator<'ctx> {
         }
 
         let arg = self.lower_expr(&call.arguments[0], analysis)?.into_number()?;
-        // Convert degrees to radians for trig functions: radians = degrees * (PI/180).
-        let arg = if intrinsic.contains("sin") || intrinsic.contains("cos") || intrinsic.contains("tan") {
-            let factor = self.f64_type.const_float(std::f64::consts::PI / 180.0);
-            self.builder
-                .build_float_mul(arg, factor, "deg2rad")
-                .map_err(|e| e.to_string())?
-        } else {
-            arg
-        };
         let function = self.get_unary_intrinsic(intrinsic);
         self.build_float_call(function, &[arg.into()], intrinsic)
     }
@@ -71,35 +61,6 @@ impl<'ctx> CodeGenerator<'ctx> {
 
         self.builder
             .build_float_div(ln_value, ln_base, "logtmp")
-            .map_err(|e| e.to_string())
-    }
-
-    fn lower_tan(
-        &mut self,
-        call: &CallExpr,
-        analysis: &SemanticAnalysis,
-    ) -> Result<FloatValue<'ctx>, String> {
-        if call.arguments.len() != 1 {
-            return Err("Aridad invalida para funcion builtin".to_string());
-        }
-
-        let arg = self.lower_expr(&call.arguments[0], analysis)?.into_number()?;
-        // Convert degrees to radians: radians = degrees * (PI/180).
-        let arg_rad = {
-            let factor = self.f64_type.const_float(std::f64::consts::PI / 180.0);
-            self.builder
-                .build_float_mul(arg, factor, "deg2rad")
-                .map_err(|e| e.to_string())?
-        };
-
-        let sin_fn = self.get_unary_intrinsic("llvm.sin.f64");
-        let cos_fn = self.get_unary_intrinsic("llvm.cos.f64");
-        
-        let sin_val = self.build_float_call(sin_fn, &[arg_rad.into()], "sin")?;
-        let cos_val = self.build_float_call(cos_fn, &[arg_rad.into()], "cos")?;
-
-        self.builder
-            .build_float_div(sin_val, cos_val, "tantmp")
             .map_err(|e| e.to_string())
     }
 
@@ -141,6 +102,55 @@ impl<'ctx> CodeGenerator<'ctx> {
         let call = self
             .builder
             .build_call(info.function, &args, &format!("call_{}", name))
+            .map_err(|e| e.to_string())?;
+        let value = call
+            .try_as_basic_value()
+            .left()
+            .ok_or_else(|| "La llamada no devolvio un valor".to_string())?;
+
+        match info.ret {
+            super::super::ValueKind::Number => Ok(CodegenValue::Number(value.into_float_value())),
+            super::super::ValueKind::Bool => Ok(CodegenValue::Bool(value.into_int_value())),
+            super::super::ValueKind::String => Ok(CodegenValue::String(value.into_pointer_value())),
+            super::super::ValueKind::Object => Ok(CodegenValue::Object(value.into_pointer_value())),
+        }
+    }
+
+    fn lower_method_call(
+        &mut self,
+        call: &CallExpr,
+        member: &crate::ast::MemberAccessExpr,
+        analysis: &SemanticAnalysis,
+    ) -> Result<CodegenValue<'ctx>, String> {
+        let object_type = self.member_object_type(member, analysis)?;
+        let owner_type = self.object_method_owner(&object_type, &member.field, analysis)?;
+        let method_name = self.method_symbol_name(&owner_type, &member.field);
+        let Some(info) = self.get_function(&method_name).cloned() else {
+            return Err(format!("Metodo no encontrado: {}.{}", owner_type, member.field));
+        };
+
+        if call.arguments.len() + 1 != info.params.len() {
+            return Err(format!("Aridad invalida en llamada a {}.{}", owner_type, member.field));
+        }
+
+        let receiver = self.lower_expr(&member.object, analysis)?.into_object()?;
+        let mut args = Vec::with_capacity(info.params.len());
+        args.push(receiver.into());
+
+        for (idx, arg_expr) in call.arguments.iter().enumerate() {
+            let value = self.lower_expr(arg_expr, analysis)?;
+            let arg = match info.params[idx + 1] {
+                super::super::ValueKind::Number => value.into_number()?.into(),
+                super::super::ValueKind::Bool => value.into_bool()?.into(),
+                super::super::ValueKind::String => value.into_string()?.into(),
+                super::super::ValueKind::Object => value.into_object()?.into(),
+            };
+            args.push(arg);
+        }
+
+        let call = self
+            .builder
+            .build_call(info.function, &args, &format!("call_{}_{}", owner_type, member.field))
             .map_err(|e| e.to_string())?;
         let value = call
             .try_as_basic_value()
