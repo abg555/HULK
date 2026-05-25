@@ -1,7 +1,7 @@
 use inkwell::values::{FloatValue, FunctionValue};
 use inkwell::AddressSpace;
 
-use crate::ast::{CallExpr, KindExpr};
+use crate::ast::{BaseCallExpr, CallExpr, KindExpr};
 use crate::semantic::SemanticAnalysis;
 
 use super::super::{CodegenValue, CodeGenerator};
@@ -25,6 +25,82 @@ impl<'ctx> CodeGenerator<'ctx> {
             },
             KindExpr::MemberAccess(member) => self.lower_method_call(call, member, analysis),
             _ => Err("Solo se soportan llamadas a funciones o metodos".to_string()),
+        }
+    }
+
+    pub(super) fn lower_base_call(
+        &mut self,
+        call: &BaseCallExpr,
+        analysis: &SemanticAnalysis,
+    ) -> Result<CodegenValue<'ctx>, String> {
+        let type_name = self
+            .current_type
+            .clone()
+            .ok_or_else(|| "base(...) solo es valido dentro de metodos".to_string())?;
+        let method_name = self
+            .current_method
+            .clone()
+            .ok_or_else(|| "base(...) solo es valido dentro de metodos".to_string())?;
+
+        let parent_name = self
+            .type_decls
+            .get(&type_name)
+            .and_then(|decl| decl.parent.as_ref())
+            .and_then(|parent| match crate::semantic::types::SemanticType::from_type_ref(parent) {
+                crate::semantic::types::SemanticType::Custom(name) => Some(name),
+                _ => None,
+            })
+            .ok_or_else(|| format!("{} no tiene padre para base(...) ", type_name))?;
+
+        let owner = self.object_method_owner(&parent_name, &method_name, analysis)?;
+        let symbol = self.method_symbol_name(&owner, &method_name);
+        let Some(info) = self.get_function(&symbol).cloned() else {
+            return Err(format!("Metodo base no encontrado: {}.{}", owner, method_name));
+        };
+
+        if call.arguments.len() + 1 != info.params.len() {
+            return Err(format!(
+                "Aridad invalida en base(...): se esperaban {} argumentos y llegaron {}",
+                info.params.len() - 1,
+                call.arguments.len()
+            ));
+        }
+
+        let self_info = self
+            .lookup_var("self")
+            .ok_or_else(|| "No se encontro self en el scope".to_string())?;
+        let receiver = self
+            .load_value(&self_info.kind, self_info.ptr, "load_self")?
+            .into_object()?;
+
+        let mut args = Vec::with_capacity(info.params.len());
+        args.push(receiver.into());
+
+        for (idx, arg_expr) in call.arguments.iter().enumerate() {
+            let value = self.lower_expr(arg_expr, analysis)?;
+            let arg = match info.params[idx + 1] {
+                super::super::ValueKind::Number => value.into_number()?.into(),
+                super::super::ValueKind::Bool => value.into_bool()?.into(),
+                super::super::ValueKind::String => value.into_string()?.into(),
+                super::super::ValueKind::Object => value.into_object()?.into(),
+            };
+            args.push(arg);
+        }
+
+        let call = self
+            .builder
+            .build_call(info.function, &args, &format!("call_base_{}", method_name))
+            .map_err(|e| e.to_string())?;
+        let value = call
+            .try_as_basic_value()
+            .left()
+            .ok_or_else(|| "La llamada base no devolvio un valor".to_string())?;
+
+        match info.ret {
+            super::super::ValueKind::Number => Ok(CodegenValue::Number(value.into_float_value())),
+            super::super::ValueKind::Bool => Ok(CodegenValue::Bool(value.into_int_value())),
+            super::super::ValueKind::String => Ok(CodegenValue::String(value.into_pointer_value())),
+            super::super::ValueKind::Object => Ok(CodegenValue::Object(value.into_pointer_value())),
         }
     }
 

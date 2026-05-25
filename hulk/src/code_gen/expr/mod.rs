@@ -33,6 +33,7 @@ impl<'ctx> CodeGenerator<'ctx> {
             KindExpr::Assign(assign) => self.lower_assign(assign, analysis),
             KindExpr::Block(block) => self.lower_block(block, analysis),
             KindExpr::Call(call) => self.lower_call(call, analysis),
+            KindExpr::BaseCall(call) => self.lower_base_call(call, analysis),
             KindExpr::New(new_expr) => self.lower_new(new_expr, analysis),
             KindExpr::MemberAccess(member) => self.lower_member_access(member, analysis),
             KindExpr::If(if_expr) => self.lower_if(if_expr, analysis),

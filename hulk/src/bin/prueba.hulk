@@ -71,15 +71,74 @@
 //     );        
 
 
-type Animal {
-  age: Number = 3;
+// type Animal {
+//   age: Number = 3;
+// }
+
+// type Dog inherits Animal {
+//   bark: Number = 7;
+// }
+
+// let d = new Dog() in
+//   print(d.age + d.bark);   // debe imprimir 10
+
+// type Counter {
+//     value: Number = 0;
+
+//     increment(): Number => self.value := self.value + 1;
+//     current(): Number => self.value;
+// }
+
+// type Person(first: String, last: String) {
+//     firstname: String = first;
+//     lastname: String = last;
+
+//     name(): String => self.firstname @@ self.lastname;
+// }
+
+// type Knight inherits Person("Phil", "Collins") {
+//     name(): String => "Sir" @@ base();
+// }
+
+// {
+//     let c = new Counter() in {
+//         c.increment();
+//         print(c.current());
+//     };
+
+//     let p = new Knight() in print(p.name());
+// }
+
+
+// type Point(x0: Number, y0: Number) {
+//     x: Number = x0;
+//     y: Number = y0;
+
+//     getX(): Number => self.x;
+//     getY(): Number => self.y;
+
+//     setX(new_x: Number): Number => self.x := new_x;
+//     setY(new_y: Number): Number => self.y := new_y;
+// }
+
+// let pt = new Point(3,4) in
+//     print("x: " @ pt.getX() @ "; y: " @ pt.getY());
+
+type Point(x0: Number, y0: Number) {
+    x: Number = x0;
+    y: Number = y0;
+
+    getX(): Number => self.x;
+    getY(): Number => self.y;
 }
 
-type Dog inherits Animal {
-  bark: Number = 7;
+// Nota: este compilador aun no permite usar params del hijo en inherits.
+// Para evitar el error, pasamos argumentos literales al padre.
+type PolarPoint inherits Point(3, 4) {
+    rho(): Number => sqrt(self.getX() ^ 2 + self.getY() ^ 2);
 }
 
-let d = new Dog() in
-  print(d.age + d.bark);   // debe imprimir 10
-
-
+{
+    let p = new PolarPoint() in
+        print("rho: " @ p.rho());
+}

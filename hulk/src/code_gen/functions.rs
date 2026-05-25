@@ -67,6 +67,8 @@ impl<'ctx> CodeGenerator<'ctx> {
         program: &Program,
         analysis: &SemanticAnalysis,
     ) -> Result<(), String> {
+        self.current_type = None;
+        self.current_method = None;
         for item in &program.items {
             let Item::Function(func) = item else {
                 continue;
@@ -161,6 +163,8 @@ impl<'ctx> CodeGenerator<'ctx> {
             };
 
             for method in &typ.methods {
+                self.current_type = Some(typ.name.clone());
+                self.current_method = Some(method.name.clone());
                 let name = self.method_symbol_name(&typ.name, &method.name);
                 let info = self
                     .functions
@@ -252,6 +256,8 @@ impl<'ctx> CodeGenerator<'ctx> {
                 }
 
                 self.exit_scope();
+                self.current_type = None;
+                self.current_method = None;
             }
         }
 

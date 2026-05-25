@@ -23,6 +23,8 @@ pub struct CodeGenerator<'ctx> {
     functions: HashMap<String, FunctionInfo<'ctx>>,
     type_decls: HashMap<String, TypeDecl>,
     struct_types: HashMap<String, StructType<'ctx>>,
+    current_type: Option<String>,
+    current_method: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -106,6 +108,8 @@ impl<'ctx> CodeGenerator<'ctx> {
             functions: HashMap::new(),
             type_decls: HashMap::new(),
             struct_types: HashMap::new(),
+            current_type: None,
+            current_method: None,
         }
     }
 
