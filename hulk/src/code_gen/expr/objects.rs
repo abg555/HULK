@@ -1,13 +1,142 @@
 use inkwell::AddressSpace;
+use inkwell::IntPredicate;
 use inkwell::values::PointerValue;
 
-use crate::ast::{MemberAccessExpr, NewExpr};
+use crate::ast::{AsExpr, IsExpr, MemberAccessExpr, NewExpr};
 use crate::semantic::SemanticAnalysis;
 use crate::semantic::types::SemanticType;
 
 use super::super::{CodeGenerator, CodegenValue, ValueKind, VarInfo};
 
 impl<'ctx> CodeGenerator<'ctx> {
+    pub(super) fn lower_is(
+        &mut self,
+        is_expr: &IsExpr,
+        analysis: &SemanticAnalysis,
+    ) -> Result<CodegenValue<'ctx>, String> {
+        let value = self.lower_expr(&is_expr.expression, analysis)?;
+        let target = SemanticType::from_type_ref(&is_expr.type_info);
+
+        match value {
+            CodegenValue::Number(_) => {
+                let result = matches!(target, SemanticType::Number);
+                Ok(CodegenValue::Bool(self.bool_type.const_int(u64::from(result), false)))
+            }
+            CodegenValue::Bool(_) => {
+                let result = matches!(target, SemanticType::Boolean);
+                Ok(CodegenValue::Bool(self.bool_type.const_int(u64::from(result), false)))
+            }
+            CodegenValue::String(_) => {
+                let result = matches!(target, SemanticType::String);
+                Ok(CodegenValue::Bool(self.bool_type.const_int(u64::from(result), false)))
+            }
+            CodegenValue::Object(object_value) => {
+                let SemanticType::Custom(target_name) = target else {
+                    return Ok(CodegenValue::Bool(self.bool_type.const_int(0, false)));
+                };
+
+                let Some(SemanticType::Custom(static_name)) =
+                    analysis.inferred_types.get(&is_expr.expression.id)
+                else {
+                    return Ok(CodegenValue::Bool(self.bool_type.const_int(0, false)));
+                };
+
+                let type_id = self.load_type_id(object_value, static_name)?;
+                let ids = self.subtype_ids(&target_name, analysis)?;
+
+                let mut current = None;
+                for id in ids {
+                    let expected = self.context.i64_type().const_int(id, false);
+                    let cmp = self
+                        .builder
+                        .build_int_compare(IntPredicate::EQ, type_id, expected, "is_cmp")
+                        .map_err(|e| e.to_string())?;
+                    current = Some(match current {
+                        Some(accum) => self
+                            .builder
+                            .build_or(accum, cmp, "is_or")
+                            .map_err(|e| e.to_string())?,
+                        None => cmp,
+                    });
+                }
+
+                let result = current.unwrap_or_else(|| self.bool_type.const_int(0, false));
+                Ok(CodegenValue::Bool(result))
+            }
+        }
+    }
+
+    pub(super) fn lower_as(
+        &mut self,
+        as_expr: &AsExpr,
+        analysis: &SemanticAnalysis,
+    ) -> Result<CodegenValue<'ctx>, String> {
+        let value = self.lower_expr(&as_expr.expression, analysis)?;
+        let target = SemanticType::from_type_ref(&as_expr.type_info);
+
+        match value {
+            CodegenValue::Number(num) => {
+                if matches!(target, SemanticType::Number) {
+                    Ok(CodegenValue::Number(num))
+                } else {
+                    Err("Cast 'as' no soportado para Number".to_string())
+                }
+            }
+            CodegenValue::Bool(boolean) => {
+                if matches!(target, SemanticType::Boolean) {
+                    Ok(CodegenValue::Bool(boolean))
+                } else {
+                    Err("Cast 'as' no soportado para Boolean".to_string())
+                }
+            }
+            CodegenValue::String(string) => {
+                if matches!(target, SemanticType::String) {
+                    Ok(CodegenValue::String(string))
+                } else {
+                    Err("Cast 'as' no soportado para String".to_string())
+                }
+            }
+            CodegenValue::Object(object_value) => {
+                let SemanticType::Custom(target_name) = target else {
+                    return Err("Cast 'as' no soportado para tipo no objeto".to_string());
+                };
+
+                let Some(SemanticType::Custom(static_name)) =
+                    analysis.inferred_types.get(&as_expr.expression.id)
+                else {
+                    return Ok(CodegenValue::Object(self.vtable_ptr_type().const_null()));
+                };
+
+                let type_id = self.load_type_id(object_value, static_name)?;
+                let ids = self.subtype_ids(&target_name, analysis)?;
+                let mut current = None;
+                for id in ids {
+                    let expected = self.context.i64_type().const_int(id, false);
+                    let cmp = self
+                        .builder
+                        .build_int_compare(IntPredicate::EQ, type_id, expected, "as_cmp")
+                        .map_err(|e| e.to_string())?;
+                    current = Some(match current {
+                        Some(accum) => self
+                            .builder
+                            .build_or(accum, cmp, "as_or")
+                            .map_err(|e| e.to_string())?,
+                        None => cmp,
+                    });
+                }
+
+                let matches = current.unwrap_or_else(|| self.bool_type.const_int(0, false));
+                let null_obj = self.vtable_ptr_type().const_null();
+                let casted = self
+                    .builder
+                    .build_select(matches, object_value, null_obj, "as_value")
+                    .map_err(|e| e.to_string())?
+                    .into_pointer_value();
+                Ok(CodegenValue::Object(casted))
+            }
+        }
+    }
+
     pub(super) fn lower_new(
         &mut self,
         new_expr: &NewExpr,
@@ -53,6 +182,23 @@ impl<'ctx> CodeGenerator<'ctx> {
                 object_struct.ptr_type(AddressSpace::default()),
                 "obj_typed",
             )
+            .map_err(|e| e.to_string())?;
+
+        let vtable_ptr = self.vtable_global(&new_expr.type_name)?.as_pointer_value();
+        let vtable_slot = self
+            .builder
+            .build_struct_gep(object_struct, typed_ptr, 0, "vtable_slot")
+            .map_err(|e| e.to_string())?;
+        let vtable_cast = self
+            .builder
+            .build_pointer_cast(
+                vtable_ptr,
+                self.context.i8_type().ptr_type(AddressSpace::default()),
+                "vtable_cast",
+            )
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_store(vtable_slot, vtable_cast)
             .map_err(|e| e.to_string())?;
 
         self.enter_scope();
@@ -193,13 +339,15 @@ impl<'ctx> CodeGenerator<'ctx> {
     }
 
     fn field_index(&self, type_name: &str, field_name: &str) -> Result<usize, String> {
-        self.object_field_names(type_name)?
+        let index = self
+            .object_field_names(type_name)?
             .iter()
             .position(|name| name == field_name)
-            .ok_or_else(|| format!("El tipo {} no define el campo {}", type_name, field_name))
+            .ok_or_else(|| format!("El tipo {} no define el campo {}", type_name, field_name))?;
+        Ok(index + 1)
     }
 
-    fn cast_object_ptr(
+    pub(super) fn cast_object_ptr(
         &self,
         object_value: &PointerValue<'ctx>,
         type_name: &str,
@@ -222,5 +370,37 @@ impl<'ctx> CodeGenerator<'ctx> {
         let i8_ptr_type = self.context.i8_type().ptr_type(AddressSpace::default());
         let fn_type = i8_ptr_type.fn_type(&[self.context.i64_type().into()], false);
         self.module.add_function("malloc", fn_type, None)
+    }
+
+    fn load_type_id(
+        &self,
+        object_value: PointerValue<'ctx>,
+        static_type: &str,
+    ) -> Result<inkwell::values::IntValue<'ctx>, String> {
+        let object_struct = self.object_struct_type(static_type)?;
+        let typed_ptr = self.cast_object_ptr(&object_value, static_type)?;
+        let vtable_slot = self
+            .builder
+            .build_struct_gep(object_struct, typed_ptr, 0, "vtable_slot")
+            .map_err(|e| e.to_string())?;
+        let vtable_ptr = self
+            .builder
+            .build_load(self.vtable_ptr_type(), vtable_slot, "vtable_ptr")
+            .map_err(|e| e.to_string())?
+            .into_pointer_value();
+        let type_ptr = self
+            .builder
+            .build_pointer_cast(
+                vtable_ptr,
+                self.context.i64_type().ptr_type(AddressSpace::default()),
+                "type_id_ptr",
+            )
+            .map_err(|e| e.to_string())?;
+        let type_id = self
+            .builder
+            .build_load(self.context.i64_type(), type_ptr, "type_id")
+            .map_err(|e| e.to_string())?
+            .into_int_value();
+        Ok(type_id)
     }
 }

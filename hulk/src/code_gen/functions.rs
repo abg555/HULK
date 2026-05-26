@@ -268,7 +268,7 @@ impl<'ctx> CodeGenerator<'ctx> {
         self.functions.get(name)
     }
 
-    fn fn_type_for_signature(
+    pub(super) fn fn_type_for_signature(
         &self,
         params: &[ValueKind],
         ret: ValueKind,

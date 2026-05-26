@@ -8,7 +8,7 @@ math(1, 2)
 
 // example: string_concat
 // expect: @hulk_format_number
-// expect: @hulk_concat
+// expect: @hulk_concat_full
 // expect: @printf
 print("total: " @ 42 @@ "!")
 
@@ -86,10 +86,52 @@ use_tan(2)
 // expect-error: No hay expresion global para compilar
 function add(a: Number, b: Number): Number => a + b;
 
-// example: print_object_error
-// expect-error: print todavia no soporta objetos
+// example: print_object_toString
+// expect: Box.toString
+// expect: @printf
 type Box {
     value: Number = 0;
+
+    toString(): String => "Box value";
 }
 
 print(new Box())
+
+// example: print_object_fallback
+// expect: <Point>
+// expect: @printf
+type Point {
+    x: Number = 0;
+}
+
+print(new Point())
+
+// example: vtable_dispatch
+// expect: @vtable.Animal
+// expect: @vtable.Dog
+// expect: method_load
+type Animal {
+    speak(): String => "...";
+}
+
+type Dog inherits Animal {
+    speak(): String => "woof";
+}
+
+let a: Animal = new Dog() in a.speak()
+
+// example: is_as_rtti
+// expect: is_cmp
+// expect: as_cmp
+type Base {
+    value: Number = 0;
+}
+
+type Child inherits Base {
+    child_value: Number = 1;
+}
+
+let x: Base = new Child() in {
+    x is Child;
+    x as Child;
+}

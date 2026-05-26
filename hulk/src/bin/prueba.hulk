@@ -124,21 +124,90 @@
 // let pt = new Point(3,4) in
 //     print("x: " @ pt.getX() @ "; y: " @ pt.getY());
 
-type Point(x0: Number, y0: Number) {
-    x: Number = x0;
-    y: Number = y0;
+// type Point(x: Number, y: Number) {
+//     x: Number = x;
+//     y: Number = y;
 
-    getX(): Number => self.x;
-    getY(): Number => self.y;
+//     getX(): Number => self.x;
+//     getY(): Number => self.y;
+// }
+
+// type PolarPoint inherits Point {
+//     rho(): Number => sqrt(self.getX() ^ 2 + self.getY() ^ 2);
+// }
+
+// type PolarPoint2(phi: Number, rho: Number) inherits Point(rho * sin(phi), rho * cos(phi)) {
+//     rho2(): Number => rho;
+// }
+
+// {
+//     let p = new PolarPoint(3, 4) in
+//         print("rho: " @ p.rho());
+
+//     let q = new PolarPoint2(1.0, 2.0) in
+//         print("rho2: " @ q.rho2());
+// }
+// type Box {
+//     value: Number = 0;
+
+//     toString(): String => "Box value";
+// }
+
+// print(new Box())
+
+// example: print_object_fallback
+// expect: <Point>
+// expect: @printf
+// type Point {
+//     x: Number = 0;
+// }
+
+// print(new Point())
+
+// example: vtable_dispatch
+// expect: @vtable.Animal
+// expect: @vtable.Dog
+// expect: method_load
+// type Animal {
+//     speak(): String => "...";
+// }
+
+// type Dog inherits Animal {
+//     speak(): String => "woof";
+// }
+
+// let a: Animal = new Dog() in print(a.speak())
+
+// // example: is_as_rtti
+// // expect: is_cmp
+// // expect: as_cmp
+type Base {
+    value: Number = 0;
 }
 
-// Nota: este compilador aun no permite usar params del hijo en inherits.
-// Para evitar el error, pasamos argumentos literales al padre.
-type PolarPoint inherits Point(3, 4) {
-    rho(): Number => sqrt(self.getX() ^ 2 + self.getY() ^ 2);
+type Child inherits Base {
+    child_value: Number = 1;
 }
 
-{
-    let p = new PolarPoint() in
-        print("rho: " @ p.rho());
+let x: Base = new Child() in {
+    print(x is Child);
+    print(x as Child);
 }
+
+// type Animal {
+//     speak(): String => "...";
+// }
+
+// type Dog inherits Animal {
+//     speak(): String => "woof";
+// }
+
+// type Cat inherits Animal {
+//     speak(): String => "meow";
+// }
+
+// print((new Dog()).speak());
+// print((new Cat()).speak());
+
+// let a: Animal = new Dog() in
+//     print(a.speak());

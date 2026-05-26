@@ -1,8 +1,9 @@
-use inkwell::values::{FloatValue, FunctionValue};
+use inkwell::values::{FloatValue, FunctionValue, PointerValue};
 use inkwell::AddressSpace;
 
 use crate::ast::{BaseCallExpr, CallExpr, KindExpr};
 use crate::semantic::SemanticAnalysis;
+use crate::semantic::types::SemanticType;
 
 use super::super::{CodegenValue, CodeGenerator};
 
@@ -210,6 +211,47 @@ impl<'ctx> CodeGenerator<'ctx> {
         }
 
         let receiver = self.lower_expr(&member.object, analysis)?.into_object()?;
+        let object_struct = self.object_struct_type(&object_type)?;
+        let typed_ptr = self.cast_object_ptr(&receiver, &object_type)?;
+        let vtable_ptr_slot = self
+            .builder
+            .build_struct_gep(object_struct, typed_ptr, 0, "vtable_ptr")
+            .map_err(|e| e.to_string())?;
+        let vtable_ptr = self
+            .builder
+            .build_load(
+                self.context.i8_type().ptr_type(AddressSpace::default()),
+                vtable_ptr_slot,
+                "vtable_load",
+            )
+            .map_err(|e| e.to_string())?
+            .into_pointer_value();
+
+        let slot = self.method_slot(&object_type, &member.field)? + 1;
+        let order = self.method_order_for_type(&object_type)?;
+        let vtable_type = self.vtable_struct_type(&object_type, &order);
+        let vtable_typed = self
+            .builder
+            .build_pointer_cast(
+                vtable_ptr,
+                vtable_type.ptr_type(AddressSpace::default()),
+                "vtable_typed",
+            )
+            .map_err(|e| e.to_string())?;
+        let method_ptr_slot = self
+            .builder
+            .build_struct_gep(vtable_type, vtable_typed, slot as u32, "method_ptr")
+            .map_err(|e| e.to_string())?;
+        let method_ptr = self
+            .builder
+            .build_load(
+                self.context.i8_type().ptr_type(AddressSpace::default()),
+                method_ptr_slot,
+                "method_load",
+            )
+            .map_err(|e| e.to_string())?
+            .into_pointer_value();
+
         let mut args = Vec::with_capacity(info.params.len());
         args.push(receiver.into());
 
@@ -224,9 +266,18 @@ impl<'ctx> CodeGenerator<'ctx> {
             args.push(arg);
         }
 
+        let fn_type = self.fn_type_for_signature(&info.params, info.ret);
+        let fn_ptr = self
+            .builder
+            .build_pointer_cast(
+                method_ptr,
+                fn_type.ptr_type(AddressSpace::default()),
+                "method_fn",
+            )
+            .map_err(|e| e.to_string())?;
         let call = self
             .builder
-            .build_call(info.function, &args, &format!("call_{}_{}", owner_type, member.field))
+            .build_indirect_call(fn_type, fn_ptr, &args, &format!("call_{}_{}", owner_type, member.field))
             .map_err(|e| e.to_string())?;
         let value = call
             .try_as_basic_value()
@@ -247,45 +298,130 @@ impl<'ctx> CodeGenerator<'ctx> {
         analysis: &SemanticAnalysis,
     ) -> Result<CodegenValue<'ctx>, String> {
         if call.arguments.len() != 1 {
-              return Err("Aridad invalida para funcion builtin".to_string());
+            return Err("Aridad invalida para funcion builtin".to_string());
         }
 
-        let value = self.lower_expr(&call.arguments[0], analysis)?;
+        let argument = &call.arguments[0];
+        let value = self.lower_expr(argument, analysis)?;
         let printf_fn = self.get_printf_function();
 
         match value {
             CodegenValue::Number(num) => {
-                let fmt = self
-                    .builder
-                    .build_global_string_ptr("%f\n", "print_fmt_num")
-                    .map_err(|e| e.to_string())?;
-                self.builder
-                    .build_call(printf_fn, &[fmt.as_pointer_value().into(), num.into()], "print")
-                    .map_err(|e| e.to_string())?;
+                self.print_number(printf_fn, num)?;
                 Ok(CodegenValue::Number(num))
             }
             CodegenValue::String(str_val) => {
-                let fmt = self
-                    .builder
-                    .build_global_string_ptr("%s\n", "print_fmt_str")
-                    .map_err(|e| e.to_string())?;
-                self.builder
-                    .build_call(printf_fn, &[fmt.as_pointer_value().into(), str_val.into()], "print")
-                    .map_err(|e| e.to_string())?;
+                self.print_string(printf_fn, str_val)?;
                 Ok(CodegenValue::String(str_val))
             }
             CodegenValue::Bool(bool_val) => {
-                let fmt = self
-                    .builder
-                    .build_global_string_ptr("%d\n", "print_fmt_bool")
-                    .map_err(|e| e.to_string())?;
-                self.builder
-                    .build_call(printf_fn, &[fmt.as_pointer_value().into(), bool_val.into()], "print")
-                    .map_err(|e| e.to_string())?;
+                self.print_bool(printf_fn, bool_val)?;
                 Ok(CodegenValue::Bool(bool_val))
             }
-            CodegenValue::Object(_) => Err("print todavia no soporta objetos".to_string()),
+            CodegenValue::Object(object_val) => {
+                self.print_object(argument, analysis, printf_fn, object_val)?;
+                Ok(CodegenValue::Object(object_val))
+            }
         }
+    }
+
+    fn print_number(
+        &self,
+        printf_fn: FunctionValue<'ctx>,
+        value: inkwell::values::FloatValue<'ctx>,
+    ) -> Result<(), String> {
+        let fmt = self
+            .builder
+            .build_global_string_ptr("%f\n", "print_fmt_num")
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_call(printf_fn, &[fmt.as_pointer_value().into(), value.into()], "print")
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    fn print_string(
+        &self,
+        printf_fn: FunctionValue<'ctx>,
+        value: PointerValue<'ctx>,
+    ) -> Result<(), String> {
+        let fmt = self
+            .builder
+            .build_global_string_ptr("%s\n", "print_fmt_str")
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_call(printf_fn, &[fmt.as_pointer_value().into(), value.into()], "print")
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    fn print_bool(
+        &self,
+        printf_fn: FunctionValue<'ctx>,
+        value: inkwell::values::IntValue<'ctx>,
+    ) -> Result<(), String> {
+        let fmt = self
+            .builder
+            .build_global_string_ptr("%d\n", "print_fmt_bool")
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_call(printf_fn, &[fmt.as_pointer_value().into(), value.into()], "print")
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    fn print_object(
+        &mut self,
+        argument: &crate::ast::Expr,
+        analysis: &SemanticAnalysis,
+        printf_fn: FunctionValue<'ctx>,
+        object_value: PointerValue<'ctx>,
+    ) -> Result<(), String> {
+        if let Some(SemanticType::Custom(type_name)) = analysis.inferred_types.get(&argument.id) {
+            if let Ok(owner_type) = self.object_method_owner(type_name, "toString", analysis) {
+                let symbol = self.method_symbol_name(&owner_type, "toString");
+                let Some(info) = self.get_function(&symbol).cloned() else {
+                    return Err(format!("Metodo no encontrado: {}.toString", owner_type));
+                };
+
+                if info.params.len() != 1 || info.ret != super::super::ValueKind::String {
+                    return Err(format!(
+                        "toString de {} debe tener firma toString(): String",
+                        owner_type
+                    ));
+                }
+
+                let call = self
+                    .builder
+                    .build_call(info.function, &[object_value.into()], "call_toString")
+                    .map_err(|e| e.to_string())?;
+                let string_value = call
+                    .try_as_basic_value()
+                    .left()
+                    .ok_or_else(|| "toString no devolvio un valor".to_string())?
+                    .into_pointer_value();
+
+                self.print_string(printf_fn, string_value)?;
+                return Ok(());
+            }
+
+            let fallback = format!("<{}>", type_name);
+            let fallback_ptr = self
+                .builder
+                .build_global_string_ptr(&fallback, "print_fmt_obj")
+                .map_err(|e| e.to_string())?
+                .as_pointer_value();
+            self.print_string(printf_fn, fallback_ptr)?;
+            return Ok(());
+        }
+
+        let fallback_ptr = self
+            .builder
+            .build_global_string_ptr("<object>", "print_fmt_obj_fallback")
+            .map_err(|e| e.to_string())?
+            .as_pointer_value();
+        self.print_string(printf_fn, fallback_ptr)?;
+        Ok(())
     }
 
     fn get_unary_intrinsic(&self, name: &str) -> FunctionValue<'ctx> {

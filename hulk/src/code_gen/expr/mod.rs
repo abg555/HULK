@@ -39,6 +39,8 @@ impl<'ctx> CodeGenerator<'ctx> {
             KindExpr::If(if_expr) => self.lower_if(if_expr, analysis),
             KindExpr::While(while_expr) => self.lower_while(while_expr, analysis),
             KindExpr::For(for_expr) => self.lower_for(for_expr, analysis),
+            KindExpr::Is(is_expr) => self.lower_is(is_expr, analysis),
+            KindExpr::As(as_expr) => self.lower_as(as_expr, analysis),
             _ => Err("Solo se soportan literales, booleanos y expresiones basicas".to_string()),
         }
     }

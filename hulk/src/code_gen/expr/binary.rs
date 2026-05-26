@@ -211,9 +211,51 @@ impl<'ctx> CodeGenerator<'ctx> {
         left: CodegenValue<'ctx>,
         right: CodegenValue<'ctx>,
     ) -> Result<CodegenValue<'ctx>, String> {
-        // @@ es lo mismo que @ pero agrega espacio entre los strings
-        // Por ahora lo hacemos igual a @, después podemos agregar la función concat_with_space
-        self.build_string_concat(left, right)
+        let left_str = match left {
+            CodegenValue::String(s) => s,
+            CodegenValue::Number(n) => {
+                let fmt_fn = self.get_format_number_function();
+                let call = self
+                    .builder
+                    .build_call(fmt_fn, &[n.into()], "format_num")
+                    .map_err(|e| e.to_string())?;
+
+                call.try_as_basic_value()
+                    .left()
+                    .ok_or_else(|| "format_number no devolvio un valor".to_string())?
+                    .into_pointer_value()
+            }
+            _ => return Err("Se esperaba string o numero para concatenacion".to_string()),
+        };
+
+        let right_str = match right {
+            CodegenValue::String(s) => s,
+            CodegenValue::Number(n) => {
+                let fmt_fn = self.get_format_number_function();
+                let call = self
+                    .builder
+                    .build_call(fmt_fn, &[n.into()], "format_num")
+                    .map_err(|e| e.to_string())?;
+
+                call.try_as_basic_value()
+                    .left()
+                    .ok_or_else(|| "format_number no devolvio un valor".to_string())?
+                    .into_pointer_value()
+            }
+            _ => return Err("Se esperaba string o numero para concatenacion".to_string()),
+        };
+
+        let concat_fn = self.get_concat_full_function();
+        let result = self
+            .builder
+            .build_call(concat_fn, &[left_str.into(), right_str.into()], "concat_full")
+            .map_err(|e| e.to_string())?
+            .try_as_basic_value()
+            .left()
+            .ok_or_else(|| "concat_full no devolvio un valor".to_string())?
+            .into_pointer_value();
+
+        Ok(CodegenValue::String(result))
     }
 
     fn get_sprintf_function(&self) -> inkwell::values::FunctionValue<'ctx> {
@@ -237,6 +279,16 @@ impl<'ctx> CodeGenerator<'ctx> {
         let i8_ptr_type = self.context.i8_type().ptr_type(inkwell::AddressSpace::default());
         let fn_type = i8_ptr_type.fn_type(&[i8_ptr_type.into(), i8_ptr_type.into()], false);
         self.module.add_function("hulk_concat", fn_type, None)
+    }
+
+    fn get_concat_full_function(&self) -> inkwell::values::FunctionValue<'ctx> {
+        if let Some(function) = self.module.get_function("hulk_concat_full") {
+            return function;
+        }
+
+        let i8_ptr_type = self.context.i8_type().ptr_type(inkwell::AddressSpace::default());
+        let fn_type = i8_ptr_type.fn_type(&[i8_ptr_type.into(), i8_ptr_type.into()], false);
+        self.module.add_function("hulk_concat_full", fn_type, None)
     }
 
     fn get_format_number_function(&self) -> inkwell::values::FunctionValue<'ctx> {

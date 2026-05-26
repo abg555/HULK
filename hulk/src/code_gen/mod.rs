@@ -2,7 +2,7 @@ use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::Module;
 use inkwell::types::{BasicTypeEnum, FloatType, IntType, StructType};
-use inkwell::values::{FloatValue, IntValue, PointerValue};
+use inkwell::values::{FloatValue, GlobalValue, IntValue, PointerValue};
 use std::collections::HashMap;
 
 mod expr;
@@ -23,6 +23,10 @@ pub struct CodeGenerator<'ctx> {
     functions: HashMap<String, FunctionInfo<'ctx>>,
     type_decls: HashMap<String, TypeDecl>,
     struct_types: HashMap<String, StructType<'ctx>>,
+    vtable_types: HashMap<String, StructType<'ctx>>,
+    vtable_globals: HashMap<String, GlobalValue<'ctx>>,
+    type_ids: HashMap<String, u64>,
+    method_orders: HashMap<String, Vec<String>>,
     current_type: Option<String>,
     current_method: Option<String>,
 }
@@ -108,6 +112,10 @@ impl<'ctx> CodeGenerator<'ctx> {
             functions: HashMap::new(),
             type_decls: HashMap::new(),
             struct_types: HashMap::new(),
+            vtable_types: HashMap::new(),
+            vtable_globals: HashMap::new(),
+            type_ids: HashMap::new(),
+            method_orders: HashMap::new(),
             current_type: None,
             current_method: None,
         }
@@ -126,6 +134,7 @@ impl<'ctx> CodeGenerator<'ctx> {
         self.prepare_object_types(analysis)?;
         self.declare_functions(program, analysis)?;
         self.declare_methods(program, analysis)?;
+        self.prepare_vtables(analysis)?;
         self.define_functions(program, analysis)?;
         self.define_methods(program, analysis)?;
 
@@ -195,6 +204,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                 _ => None,
             })
             .collect();
+        self.method_orders.clear();
     }
 
     pub(super) fn method_symbol_name(&self, type_name: &str, method_name: &str) -> String {
@@ -211,16 +221,206 @@ impl<'ctx> CodeGenerator<'ctx> {
 
         for name in self.type_decls.keys() {
             let field_types = self.object_field_types(name, analysis)?;
+            let mut full_types = Vec::with_capacity(field_types.len() + 1);
+            full_types.push(self.vtable_ptr_type().into());
+            full_types.extend(field_types);
 
             let struct_type = self
                 .struct_types
                 .get(name)
                 .copied()
                 .ok_or_else(|| format!("No se encontro el struct LLVM para {}", name))?;
-            struct_type.set_body(&field_types, false);
+            struct_type.set_body(&full_types, false);
         }
 
         Ok(())
+    }
+
+    pub(super) fn vtable_ptr_type(&self) -> inkwell::types::PointerType<'ctx> {
+        self.context
+            .i8_type()
+            .ptr_type(inkwell::AddressSpace::default())
+    }
+
+    pub(super) fn prepare_vtables(&mut self, analysis: &SemanticAnalysis) -> Result<(), String> {
+        self.vtable_types.clear();
+        self.vtable_globals.clear();
+        self.type_ids.clear();
+
+        let mut type_names = self.type_decls.keys().cloned().collect::<Vec<_>>();
+        type_names.sort();
+        for (idx, name) in type_names.iter().enumerate() {
+            self.type_ids.insert(name.clone(), idx as u64);
+        }
+
+        for name in type_names {
+            let order = self.method_order_for_type(&name)?;
+            let vtable_type = self.vtable_struct_type(&name, &order);
+            let mut values = Vec::with_capacity(order.len() + 1);
+
+            let type_id = self
+                .type_ids
+                .get(&name)
+                .copied()
+                .ok_or_else(|| format!("Type id no definido para {}", name))?;
+            values.push(self.context.i64_type().const_int(type_id, false).into());
+
+            let i8_ptr_type = self.vtable_ptr_type();
+            for method_name in &order {
+                let owner = self.object_method_owner(&name, method_name, analysis)?;
+                let symbol = self.method_symbol_name(&owner, method_name);
+                let info = self
+                    .get_function(&symbol)
+                    .ok_or_else(|| format!("Metodo no declarado: {}", symbol))?;
+                let ptr = info
+                    .function
+                    .as_global_value()
+                    .as_pointer_value()
+                    .const_cast(i8_ptr_type);
+                values.push(ptr.into());
+            }
+
+            let vtable_value = vtable_type.const_named_struct(&values);
+            let global = self.module.add_global(vtable_type, None, &format!("vtable.{}", name));
+            global.set_initializer(&vtable_value);
+            global.set_constant(true);
+            self.vtable_globals.insert(name, global);
+        }
+
+        Ok(())
+    }
+
+    pub(super) fn vtable_struct_type(
+        &mut self,
+        type_name: &str,
+        order: &[String],
+    ) -> StructType<'ctx> {
+        if let Some(existing) = self.vtable_types.get(type_name).copied() {
+            return existing;
+        }
+
+        let i8_ptr_type = self.vtable_ptr_type();
+        let mut fields = Vec::with_capacity(order.len() + 1);
+        fields.push(self.context.i64_type().into());
+        for _ in 0..order.len() {
+            fields.push(i8_ptr_type.into());
+        }
+
+        let struct_type = self.context.opaque_struct_type(&format!("vtable.{}", type_name));
+        struct_type.set_body(&fields, false);
+        self.vtable_types.insert(type_name.to_string(), struct_type);
+        struct_type
+    }
+
+    pub(super) fn method_order_for_type(&mut self, type_name: &str) -> Result<Vec<String>, String> {
+        if let Some(existing) = self.method_orders.get(type_name) {
+            return Ok(existing.clone());
+        }
+
+        let decl = self
+            .type_decls
+            .get(type_name)
+            .ok_or_else(|| format!("Tipo no definido: {}", type_name))?;
+        let parent_name = decl.parent.as_ref().and_then(|parent| {
+            if let SemanticType::Custom(name) = SemanticType::from_type_ref(parent) {
+                Some(name)
+            } else {
+                None
+            }
+        });
+        let methods = decl
+            .methods
+            .iter()
+            .map(|method| method.name.clone())
+            .collect::<Vec<_>>();
+
+        let mut order = if let Some(parent) = parent_name {
+            self.method_order_for_type(&parent)?
+        } else {
+            Vec::new()
+        };
+
+        for method_name in methods {
+            if !order.iter().any(|name| name == &method_name) {
+                order.push(method_name);
+            }
+        }
+
+        self.method_orders.insert(type_name.to_string(), order.clone());
+        Ok(order)
+    }
+
+    pub(super) fn method_slot(&mut self, type_name: &str, method_name: &str) -> Result<usize, String> {
+        let order = self.method_order_for_type(type_name)?;
+        order
+            .iter()
+            .position(|name| name == method_name)
+            .ok_or_else(|| format!("El tipo {} no define el metodo {}", type_name, method_name))
+    }
+
+    pub(super) fn vtable_global(&self, type_name: &str) -> Result<GlobalValue<'ctx>, String> {
+        self.vtable_globals
+            .get(type_name)
+            .copied()
+            .ok_or_else(|| format!("Vtable no definida para {}", type_name))
+    }
+
+    pub(super) fn type_id_for(&self, type_name: &str) -> Result<u64, String> {
+        self.type_ids
+            .get(type_name)
+            .copied()
+            .ok_or_else(|| format!("Type id no definido para {}", type_name))
+    }
+
+    pub(super) fn type_is_subtype_of(
+        &self,
+        actual_name: &str,
+        expected_name: &str,
+        analysis: &SemanticAnalysis,
+    ) -> bool {
+        if actual_name == expected_name {
+            return true;
+        }
+
+        let mut current = Some(actual_name.to_string());
+        let mut visited = std::collections::HashSet::new();
+
+        while let Some(name) = current {
+            if !visited.insert(name.clone()) {
+                break;
+            }
+
+            let Some(shape) = analysis.type_shapes.get(&name) else {
+                break;
+            };
+
+            match &shape.parent {
+                Some(parent) if parent == expected_name => return true,
+                Some(parent) => current = Some(parent.clone()),
+                None => break,
+            }
+        }
+
+        false
+    }
+
+    pub(super) fn subtype_ids(
+        &self,
+        expected_name: &str,
+        analysis: &SemanticAnalysis,
+    ) -> Result<Vec<u64>, String> {
+        let mut ids = Vec::new();
+        for name in self.type_decls.keys() {
+            if self.type_is_subtype_of(name, expected_name, analysis) {
+                ids.push(self.type_id_for(name)?);
+            }
+        }
+
+        if ids.is_empty() {
+            return Err(format!("No se encontraron subtipos para {}", expected_name));
+        }
+
+        Ok(ids)
     }
 
     pub(super) fn value_kind_for_expr(
