@@ -167,7 +167,7 @@ ProtocolMethodDef: ProtocolMethod = {
 
 TypeDecl: TypeDecl = {
     "type" <name:"id"><params:TypeParams?><parent:ParentSpec?>"{" <members:TypeMembers> "}"=> {
-        let (parent_type, parent_args) = parent.unwrap_or((None, vec![]));
+        let (parent_type, parent_args) = parent.unwrap_or((None, None));
         TypeDecl {name,param: params.unwrap_or(vec![]),parent: parent_type,parent_arg: parent_args,fields: members.0,methods: members.1,}
     }
 };
@@ -176,10 +176,9 @@ TypeParams: Vec<Param> = {
     "(" <params:ParamList> ")" => params
 };
 
-ParentSpec: (Option<TypeRef>, Vec<Expr>) = {
+ParentSpec: (Option<TypeRef>, Option<Vec<Expr>>) = {
     "inherits" <name:"id"> <args:ParentArgs?> => {
         let type_ref = TypeRef::Custom(name);
-        let args = args.unwrap_or(vec![]);
         (Some(type_ref), args)
     }
 };

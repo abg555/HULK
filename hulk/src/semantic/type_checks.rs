@@ -21,6 +21,10 @@ impl SemanticAnalyzer {
             return true;
         }
 
+        if Self::is_object_type(expected) {
+            return self.value_can_conform_to_object(actual);
+        }
+
         match (expected, actual) {
             (SemanticType::Vector(expected_inner), SemanticType::Vector(actual_inner)) => {
                 self.is_compatible_type(expected_inner, actual_inner)
@@ -34,6 +38,9 @@ impl SemanticAnalyzer {
                 actual_params,
                 actual_ret,
             ),
+            (SemanticType::Custom(expected_name), SemanticType::Vector(_)) => {
+                self.vector_conforms_to_protocol(expected_name)
+            }
             (SemanticType::Custom(expected_name), SemanticType::Function(_, _)) => {
                 self.function_compatible_with_functor_protocol(expected_name, actual)
             }
@@ -95,6 +102,14 @@ impl SemanticAnalyzer {
         self.is_compatible_type(&invoke_signature, actual)
     }
 
+    fn vector_conforms_to_protocol(&self, expected_name: &str) -> bool {
+        let Some(symbol) = self.symbols.lookup(expected_name) else {
+            return false;
+        };
+        symbol.kind == SymbolKind::Protocol
+            && (expected_name == "Iterable" || self.protocol_extends("Iterable", expected_name))
+    }
+
     /// Permite usar un objeto con `invoke` donde se espera un tipo funcion.
     fn functor_compatible_with_function(&self, expected: &SemanticType, actual_name: &str) -> bool {
         let Some(invoke_signature) = self.lookup_functor_invoke_type(actual_name) else {
@@ -139,6 +154,13 @@ impl SemanticAnalyzer {
             return true;
         }
 
+        if expected_name == "Object" {
+            return self
+                .symbols
+                .lookup(actual_name)
+                .is_some_and(|symbol| symbol.kind == SymbolKind::Type);
+        }
+
         let mut current = Some(actual_name.to_string());
         let mut visited = HashSet::new();
 
@@ -159,6 +181,94 @@ impl SemanticAnalyzer {
         }
 
         false
+    }
+
+    /// Calcula el menor supertipo comun conocido para dos tipos.
+    pub(super) fn common_supertype(
+        &self,
+        left: &SemanticType,
+        right: &SemanticType,
+    ) -> SemanticType {
+        if matches!(left, SemanticType::Unknown) || matches!(right, SemanticType::Unknown) {
+            return SemanticType::Unknown;
+        }
+        if left == right {
+            return left.clone();
+        }
+
+        if let (SemanticType::Vector(left_inner), SemanticType::Vector(right_inner)) =
+            (left, right)
+        {
+            return SemanticType::Vector(Box::new(
+                self.common_supertype(left_inner, right_inner),
+            ));
+        }
+
+        if self.is_compatible_type(left, right) {
+            return left.clone();
+        }
+        if self.is_compatible_type(right, left) {
+            return right.clone();
+        }
+
+        let (SemanticType::Custom(left_name), SemanticType::Custom(right_name)) = (left, right)
+        else {
+            if self.value_can_conform_to_object(left) && self.value_can_conform_to_object(right) {
+                return SemanticType::Custom("Object".to_string());
+            }
+            return SemanticType::Unknown;
+        };
+
+        for ancestor in self.type_ancestor_chain(left_name) {
+            if self.type_is_subtype_of(right_name, &ancestor) {
+                return SemanticType::Custom(ancestor);
+            }
+        }
+
+        if self.value_can_conform_to_object(left) && self.value_can_conform_to_object(right) {
+            return SemanticType::Custom("Object".to_string());
+        }
+
+        SemanticType::Unknown
+    }
+
+    fn is_object_type(typ: &SemanticType) -> bool {
+        matches!(typ, SemanticType::Custom(name) if name == "Object")
+    }
+
+    fn value_can_conform_to_object(&self, typ: &SemanticType) -> bool {
+        match typ {
+            SemanticType::Unknown => true,
+            SemanticType::Number
+            | SemanticType::String
+            | SemanticType::Boolean
+            | SemanticType::Vector(_)
+            | SemanticType::Function(_, _) => true,
+            SemanticType::Custom(name) => self
+                .symbols
+                .lookup(name)
+                .is_some_and(|symbol| symbol.kind != SymbolKind::Namespace),
+        }
+    }
+
+    fn type_ancestor_chain(&self, type_name: &str) -> Vec<String> {
+        let mut chain = Vec::new();
+        let mut current = Some(type_name.to_string());
+        let mut visited = HashSet::new();
+
+        while let Some(name) = current {
+            if !visited.insert(name.clone()) {
+                break;
+            }
+
+            chain.push(name.clone());
+            current = self
+                .type_shapes
+                .get(&name)
+                .and_then(|shape| shape.parent.clone());
+        }
+
+        chain
     }
 
     /// Comprueba que un tipo implemente todos los metodos de un protocolo.
@@ -198,6 +308,20 @@ impl SemanticAnalyzer {
         }
 
         true
+    }
+
+    pub(super) fn iterable_element_type(&self, type_name: &str) -> Option<SemanticType> {
+        let Some(SemanticType::Function(params, ret)) =
+            self.lookup_member_type(type_name, "current")
+        else {
+            return None;
+        };
+
+        if params.is_empty() {
+            Some(*ret)
+        } else {
+            None
+        }
     }
 
     /// Comprueba que un protocolo sea compatible o extienda al protocolo esperado.
@@ -318,6 +442,10 @@ impl SemanticAnalyzer {
             return object_type.clone();
         }
 
+        if let SemanticType::Vector(inner) = object_type {
+            return self.resolve_vector_member_type(inner, member, span);
+        }
+
         let SemanticType::Custom(type_name) = object_type else {
             self.diagnostics.error(
                 format!(
@@ -352,6 +480,26 @@ impl SemanticAnalyzer {
             span,
         );
         SemanticType::Unknown
+    }
+
+    fn resolve_vector_member_type(
+        &mut self,
+        element_type: &SemanticType,
+        member: &str,
+        span: Span,
+    ) -> SemanticType {
+        match member {
+            "size" => SemanticType::Function(Vec::new(), Box::new(SemanticType::Number)),
+            "next" => SemanticType::Function(Vec::new(), Box::new(SemanticType::Boolean)),
+            "current" => SemanticType::Function(Vec::new(), Box::new(element_type.clone())),
+            _ => {
+                self.diagnostics.error(
+                    format!("El vector no define el miembro {}", member),
+                    span,
+                );
+                SemanticType::Unknown
+            }
+        }
     }
 
     /// Busca un miembro en un tipo concreto y en su cadena de herencia.
@@ -495,16 +643,17 @@ impl SemanticAnalyzer {
         parent_name: &str,
         parent_shape: &super::TypeShape,
     ) {
-        if parent_shape.ctor_params.len() != typ.parent_arg.len() {
+        let parent_arg = typ.parent_arg.as_ref().map(|v| v.as_slice()).unwrap_or(&[]);
+        if parent_shape.ctor_params.len() != parent_arg.len() {
             self.diagnostics.error(
                 format!(
                     "Constructor de {} espera {} argumentos en la herencia de {}, pero se proporcionan {}",
                     parent_name,
                     parent_shape.ctor_params.len(),
                     typ.name,
-                    typ.parent_arg.len()
+                    parent_arg.len()
                 ),
-                if let Some(expr) = typ.parent_arg.first() {
+                if let Some(expr) = parent_arg.first() {
                     expr.span
                 } else {
                     self.type_decl_span(typ)
@@ -515,7 +664,7 @@ impl SemanticAnalyzer {
         for (idx, (expected, arg_expr)) in parent_shape
             .ctor_params
             .iter()
-            .zip(typ.parent_arg.iter())
+            .zip(parent_arg.iter())
             .enumerate()
         {
             let actual = self.check_expr(arg_expr);

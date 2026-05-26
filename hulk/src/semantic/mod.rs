@@ -367,11 +367,10 @@ impl SemanticAnalyzer {
 
         let mut fields = HashMap::new();
         for field in &typ.fields {
-            let field_ty = field
-                .type_annotation
-                .as_ref()
-                .map(SemanticType::from_type_ref)
-                .unwrap_or(SemanticType::Unknown);
+            let field_ty = field.type_annotation.as_ref().map_or_else(
+                || self.infer_field_initializer_type_hint(typ, &fields, &field.initializer),
+                SemanticType::from_type_ref,
+            );
             fields.insert(field.name.clone(), field_ty);
         }
 
@@ -403,6 +402,99 @@ impl SemanticAnalyzer {
             fields,
             methods,
             parent,
+        }
+    }
+
+    /// Intenta inferir el tipo de un inicializador de campo usando la informacion ya conocida.
+    fn infer_field_initializer_type_hint(
+        &self,
+        typ: &TypeDecl,
+        known_fields: &HashMap<String, SemanticType>,
+        expr: &Expr,
+    ) -> SemanticType {
+        match &expr.kind {
+            KindExpr::Literal(lit) => match lit.value {
+                LiteralValue::Number(_) => SemanticType::Number,
+                LiteralValue::String(_) => SemanticType::String,
+                LiteralValue::Bool(_) => SemanticType::Boolean,
+            },
+            KindExpr::Variable(var) => {
+                if var.name == "self" {
+                    SemanticType::Custom(typ.name.clone())
+                } else {
+                    typ.param
+                        .iter()
+                        .find(|param| param.name == var.name)
+                        .and_then(|param| param.types.as_ref())
+                        .map(SemanticType::from_type_ref)
+                        .or_else(|| known_fields.get(&var.name).cloned())
+                        .unwrap_or(SemanticType::Unknown)
+                }
+            }
+            KindExpr::MemberAccess(member) => {
+                let object_ty = self.infer_field_initializer_type_hint(typ, known_fields, &member.object);
+                match object_ty {
+                    SemanticType::Custom(type_name) if type_name == typ.name => known_fields
+                        .get(&member.field)
+                        .cloned()
+                        .or_else(|| {
+                            self.lookup_member_type_in_parent_chain(&typ.name, &member.field)
+                        })
+                        .unwrap_or(SemanticType::Unknown),
+                    SemanticType::Custom(type_name) => self
+                        .lookup_member_type(&type_name, &member.field)
+                        .unwrap_or(SemanticType::Unknown),
+                    SemanticType::Vector(inner) if member.field == "current" => *inner,
+                    SemanticType::Vector(inner) if member.field == "next" => {
+                        SemanticType::Function(Vec::new(), Box::new(*inner))
+                    }
+                    _ => SemanticType::Unknown,
+                }
+            }
+            KindExpr::Unary(unary) => {
+                let _ = self.infer_field_initializer_type_hint(typ, known_fields, &unary.right);
+                match unary.operator {
+                    UnaryOperator::Negate => SemanticType::Number,
+                    UnaryOperator::Not => SemanticType::Boolean,
+                }
+            }
+            KindExpr::Binary(bin) => {
+                let _ = self.infer_field_initializer_type_hint(typ, known_fields, &bin.left);
+                let _ = self.infer_field_initializer_type_hint(typ, known_fields, &bin.right);
+                match bin.operator {
+                    BinaryOperator::Add
+                    | BinaryOperator::Sub
+                    | BinaryOperator::Mul
+                    | BinaryOperator::Div
+                    | BinaryOperator::Pow
+                    | BinaryOperator::Mod => SemanticType::Number,
+                    BinaryOperator::And | BinaryOperator::Or => SemanticType::Boolean,
+                    BinaryOperator::Concat | BinaryOperator::FullConcat => SemanticType::String,
+                    BinaryOperator::Equal
+                    | BinaryOperator::NotEqual
+                    | BinaryOperator::Less
+                    | BinaryOperator::Greater
+                    | BinaryOperator::LessEqual
+                    | BinaryOperator::GreaterEqual => SemanticType::Boolean,
+                }
+            }
+            KindExpr::Array(array) => {
+                if array.elements.is_empty() {
+                    SemanticType::Vector(Box::new(SemanticType::Unknown))
+                } else {
+                    let mut element_ty = self.infer_field_initializer_type_hint(
+                        typ,
+                        known_fields,
+                        &array.elements[0],
+                    );
+                    for element in array.elements.iter().skip(1) {
+                        let current = self.infer_field_initializer_type_hint(typ, known_fields, element);
+                        element_ty = self.common_supertype(&element_ty, &current);
+                    }
+                    SemanticType::Vector(Box::new(element_ty))
+                }
+            }
+            _ => SemanticType::Unknown,
         }
     }
 
@@ -459,13 +551,19 @@ impl SemanticAnalyzer {
             }
         }
 
-        // Validate parent constructor arguments if parent exists
+        let mut implicit_ctor_params = None;
+        let mut parent_info_for_validation = None;
         if let Some(parent) = &typ.parent {
             if let SemanticType::Custom(parent_name) =
                 self.resolve_type_ref(Some(parent), self.type_decl_span(typ))
             {
                 if let Some(parent_shape) = self.type_shapes.get(&parent_name).cloned() {
-                    self.validate_parent_constructor_args(typ, &parent_name, &parent_shape);
+                    // Implicit constructor parameter inheritance
+                    if typ.param.is_empty() && typ.parent_arg.is_none() && !parent_shape.ctor_params.is_empty() {
+                        implicit_ctor_params = Some(parent_shape.ctor_params.clone());
+                    } else {
+                        parent_info_for_validation = Some((parent_name, parent_shape));
+                    }
                 }
             }
         }
@@ -476,22 +574,26 @@ impl SemanticAnalyzer {
             .cloned()
             .unwrap_or_else(|| self.infer_type_decl_params(typ));
         if let Some(shape) = self.type_shapes.get_mut(&typ.name) {
-            shape.ctor_params = typ
-                .param
-                .iter()
-                .map(|param| {
-                    param
-                        .types
-                        .as_ref()
-                        .map(SemanticType::from_type_ref)
-                        .unwrap_or_else(|| {
-                            inferred_type_params
-                                .get(&param.name)
-                                .cloned()
-                                .unwrap_or(SemanticType::Unknown)
-                        })
-                })
-                .collect();
+            if let Some(implicit_params) = implicit_ctor_params {
+                shape.ctor_params = implicit_params;
+            } else {
+                shape.ctor_params = typ
+                    .param
+                    .iter()
+                    .map(|param| {
+                        param
+                            .types
+                            .as_ref()
+                            .map(SemanticType::from_type_ref)
+                            .unwrap_or_else(|| {
+                                inferred_type_params
+                                    .get(&param.name)
+                                    .cloned()
+                                    .unwrap_or(SemanticType::Unknown)
+                            })
+                    })
+                    .collect();
+            }
         }
 
         self.enter_scope();
@@ -517,6 +619,11 @@ impl SemanticAnalyzer {
                 true,
             );
             self.mark_local_readonly(&param.name, "argumento de tipo es de solo lectura");
+        }
+
+        // Validate parent constructor arguments inside the constructor parameters scope
+        if let Some((parent_name, parent_shape)) = parent_info_for_validation {
+            self.validate_parent_constructor_args(typ, &parent_name, &parent_shape);
         }
 
         let mut field_names = HashSet::new();
@@ -611,13 +718,15 @@ impl SemanticAnalyzer {
                     field.initializer.span,
                 );
             }
-            self.define_local_with_state(
-                &field.name,
-                SymbolKind::Variable,
-                declared,
-                field.initializer.span,
-                self.guarantees_value(&field.initializer),
-            );
+
+            if let Some(shape) = self.type_shapes.get_mut(&typ.name) {
+                let stored_ty = if field.type_annotation.is_none() {
+                    init_ty.clone()
+                } else {
+                    declared
+                };
+                shape.fields.insert(field.name.clone(), stored_ty);
+            }
             initialized_fields.insert(field.name.clone());
         }
 
@@ -795,7 +904,7 @@ impl SemanticAnalyzer {
 
     /// Obtiene un span util para diagnosticos de un tipo declarado.
     fn type_decl_span(&self, typ: &TypeDecl) -> Span {
-        if let Some(expr) = typ.parent_arg.first() {
+        if let Some(expr) = typ.parent_arg.as_ref().and_then(|args| args.first()) {
             return expr.span;
         }
         if let Some(field) = typ.fields.first() {
@@ -815,6 +924,8 @@ impl SemanticAnalyzer {
     /// Instala los simbolos integrados del lenguaje antes del chequeo del programa.
     fn install_prelude(&mut self) {
         // Builtins base para evitar falsos errores semanticos en programas validos.
+        self.define_builtin_type("Object");
+
         self.define_builtin_function("print", vec![SemanticType::Unknown], SemanticType::Unknown);
         self.define_builtin_function(
             "range",
@@ -835,8 +946,26 @@ impl SemanticAnalyzer {
         self.define_builtin_constant("PI", SemanticType::Number);
         self.define_builtin_constant("E", SemanticType::Number);
 
-        // Predefined Iterable protocol
-        self.define_builtin_protocol("Iterable");
+        // Predefined Iterable protocol.
+        self.define_builtin_iterable_protocol();
+    }
+
+    /// Define un tipo integrado en la tabla de simbolos.
+    fn define_builtin_type(&mut self, name: &str) {
+        let _ = self.symbols.define(Symbol {
+            name: name.to_string(),
+            kind: SymbolKind::Type,
+            typ: SemanticType::Custom(name.to_string()),
+        });
+        self.type_shapes.insert(
+            name.to_string(),
+            TypeShape {
+                ctor_params: Vec::new(),
+                fields: HashMap::new(),
+                methods: HashMap::new(),
+                parent: None,
+            },
+        );
     }
 
     /// Define una funcion integrada en la tabla de simbolos.
@@ -853,18 +982,33 @@ impl SemanticAnalyzer {
         });
     }
 
-    /// Define un protocolo integrado en la tabla de simbolos.
-    fn define_builtin_protocol(&mut self, name: &str) {
+    /// Define el protocolo Iterable integrado del lenguaje.
+    fn define_builtin_iterable_protocol(&mut self) {
+        let name = "Iterable";
         let _ = self.symbols.define(Symbol {
             name: name.to_string(),
             kind: SymbolKind::Protocol,
-            typ: SemanticType::Unknown,
+            typ: SemanticType::Custom(name.to_string()),
         });
+
+        let mut methods = HashMap::new();
+        methods.insert(
+            "next".to_string(),
+            SemanticType::Function(Vec::new(), Box::new(SemanticType::Boolean)),
+        );
+        methods.insert(
+            "current".to_string(),
+            SemanticType::Function(
+                Vec::new(),
+                Box::new(SemanticType::Custom("Object".to_string())),
+            ),
+        );
+
         self.protocol_shapes.insert(
             name.to_string(),
             ProtocolShape {
                 parent: None,
-                methods: HashMap::new(),
+                methods,
             },
         );
     }

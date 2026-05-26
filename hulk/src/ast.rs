@@ -46,7 +46,7 @@ pub struct TypeDecl {
     pub name: String, //ej: type Person{ name:String   mynameis()=> print(self.name)}
     pub param: Vec<Param>, //ej: type Point(x,y)...
     pub parent: Option<TypeRef>, //herencia
-    pub parent_arg: Vec<Expr>, //parametros que se le pasan al padre
+    pub parent_arg: Option<Vec<Expr>>, //parametros que se le pasan al padre
     pub fields: Vec<FieldDecl>,
     pub methods: Vec<FunctionDecl>,
 }

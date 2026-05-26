@@ -152,11 +152,13 @@ fn print_ast(program: &hulk::Program) {
                 if let Some(parent) = &typ.parent {
                     let parent_str = format_type_ref(parent);
                     println!("      Inherits from: {}", parent_str);
-                    if !typ.parent_arg.is_empty() {
-                        println!("      Parent arguments: {}", typ.parent_arg.len());
-                        for (arg_idx, arg_expr) in typ.parent_arg.iter().enumerate() {
-                            println!("        [{}]", arg_idx);
-                            print_expr_details(arg_expr, 10);
+                    if let Some(p_args) = &typ.parent_arg {
+                        if !p_args.is_empty() {
+                            println!("      Parent arguments: {}", p_args.len());
+                            for (arg_idx, arg_expr) in p_args.iter().enumerate() {
+                                println!("        [{}]", arg_idx);
+                                print_expr_details(arg_expr, 10);
+                            }
                         }
                     }
                 }

@@ -7,7 +7,8 @@ impl SemanticAnalyzer {
     /// Determina si una expresion garantiza un valor en todos sus caminos.
     pub(super) fn guarantees_value(&self, expr: &Expr) -> bool {
         match &expr.kind {
-            KindExpr::While(_) | KindExpr::For(_) => false,
+            KindExpr::While(while_expr) => self.guarantees_value(&while_expr.body),
+            KindExpr::For(for_expr) => self.guarantees_value(&for_expr.body),
             KindExpr::Block(block) => block
                 .expressions
                 .last()
