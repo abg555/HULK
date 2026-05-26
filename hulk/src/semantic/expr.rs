@@ -359,9 +359,10 @@ impl SemanticAnalyzer {
                 let state_after_condition_eval = self.assigned_scopes.clone();
 
                 let mut loop_state = state_after_condition_eval.clone();
+                let mut body_ty = SemanticType::Unknown;
                 for _ in 0..Self::LOOP_FIXPOINT_MAX_ITERS {
                     self.assigned_scopes = loop_state.clone();
-                    self.check_expr(&while_expr.body);
+                    body_ty = self.check_expr(&while_expr.body);
                     let next_state = self.assigned_scopes.clone();
                     if next_state == loop_state {
                         break;
@@ -377,7 +378,7 @@ impl SemanticAnalyzer {
                         &loop_state,
                     ),
                 };
-                SemanticType::Unknown
+                body_ty
             }
             KindExpr::For(for_expr) => {
                 let min_iterations = self.iterable_min_iterations(&for_expr.iterable);
@@ -388,7 +389,8 @@ impl SemanticAnalyzer {
                     SemanticType::Vector(inner) => *inner,
                     SemanticType::Custom(ref type_name) => {
                         if self.type_conforms_to_protocol(type_name, "Iterable") {
-                            SemanticType::Unknown
+                            self.iterable_element_type(type_name)
+                                .unwrap_or(SemanticType::Unknown)
                         } else {
                             self.diagnostics.error(
                                 format!(
@@ -413,6 +415,7 @@ impl SemanticAnalyzer {
                 };
 
                 let mut loop_state = state_after_iterable_eval.clone();
+                let mut body_ty = SemanticType::Unknown;
                 for _ in 0..Self::LOOP_FIXPOINT_MAX_ITERS {
                     self.assigned_scopes = loop_state.clone();
                     self.enter_scope();
@@ -423,7 +426,7 @@ impl SemanticAnalyzer {
                         expr.span,
                     );
                     self.mark_local_readonly(&for_expr.variable, "iterador de for");
-                    self.check_expr(&for_expr.body);
+                    body_ty = self.check_expr(&for_expr.body);
                     self.exit_scope();
                     let next_state = self.assigned_scopes.clone();
                     if next_state == loop_state {
@@ -440,7 +443,7 @@ impl SemanticAnalyzer {
                         &loop_state,
                     ),
                 };
-                SemanticType::Unknown
+                body_ty
             }
             KindExpr::Assign(assign) => {
                 if !Self::is_assignable_target(&assign.target.kind) {
@@ -511,11 +514,7 @@ impl SemanticAnalyzer {
                     let mut element_ty = self.check_expr(&array.elements[0]);
                     for elem in array.elements.iter().skip(1) {
                         let current = self.check_expr(elem);
-                        if !self.is_compatible_type(&element_ty, &current)
-                            && !self.is_compatible_type(&current, &element_ty)
-                        {
-                            element_ty = SemanticType::Unknown;
-                        }
+                        element_ty = self.common_supertype(&element_ty, &current);
                     }
                     SemanticType::Vector(Box::new(element_ty))
                 }
@@ -750,23 +749,9 @@ impl SemanticAnalyzer {
 
         let mut combined_ty = then_ty;
         for elif_ty in elif_types {
-            if self.is_compatible_type(&combined_ty, &elif_ty) {
-                continue;
-            }
-            if self.is_compatible_type(&elif_ty, &combined_ty) {
-                combined_ty = elif_ty;
-                continue;
-            }
-            combined_ty = SemanticType::Unknown;
-            break;
+            combined_ty = self.common_supertype(&combined_ty, &elif_ty);
         }
-        if self.is_compatible_type(&combined_ty, &else_ty) {
-            combined_ty
-        } else if self.is_compatible_type(&else_ty, &combined_ty) {
-            else_ty
-        } else {
-            SemanticType::Unknown
-        }
+        self.common_supertype(&combined_ty, &else_ty)
     }
 
     /// Valida una expresion `match` y su exhaustividad.
@@ -875,10 +860,8 @@ impl SemanticAnalyzer {
 
             if matches!(merged, SemanticType::Unknown) {
                 merged = case_ty;
-            } else if !self.is_compatible_type(&merged, &case_ty)
-                && !self.is_compatible_type(&case_ty, &merged)
-            {
-                merged = SemanticType::Unknown;
+            } else {
+                merged = self.common_supertype(&merged, &case_ty);
             }
         }
 

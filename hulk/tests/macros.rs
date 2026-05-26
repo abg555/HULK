@@ -80,6 +80,21 @@ fn accepts_symbolic_macro_argument() {
 }
 
 #[test]
+fn accepts_object_typed_symbolic_macro_argument() {
+    let input = r#"
+    def identity(@value: Object) => value;
+
+    let item: Object = 42 in identity(@item);
+    "#;
+
+    let result = analyze_program(input);
+    assert!(
+        result.is_ok(),
+        "expected Object annotations in macros to type-check, got: {result:?}"
+    );
+}
+
+#[test]
 fn rejects_unmarked_symbolic_macro_argument() {
     let input = r#"
     def identity(@value: Number) => value;
