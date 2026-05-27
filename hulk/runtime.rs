@@ -1,4 +1,5 @@
 use std::ffi::CString;
+use std::ffi::CStr;
 use std::os::raw::c_char;
 
 #[unsafe(no_mangle)]
@@ -60,4 +61,18 @@ pub extern "C" fn hulk_format_number(n: f64) -> *mut c_char {
             .unwrap_or_else(|_| CString::new("0").unwrap())
             .into_raw()
     }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn hulk_panic(message: *const c_char) {
+    unsafe {
+        if message.is_null() {
+            eprintln!("Runtime error: cast 'as' failed");
+        } else {
+            let msg = CStr::from_ptr(message).to_str().unwrap_or("Runtime error");
+            eprintln!("{}", msg);
+        }
+    }
+
+    std::process::abort();
 }

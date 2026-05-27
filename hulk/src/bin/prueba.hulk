@@ -194,6 +194,23 @@ let x: Base = new Child() in {
     print(x as Child);
 }
 
+// example: is_as_non_object
+// expect: 1
+// expect: 0
+// expect: 1
+{
+    print(42 is Number);
+    print(42 is String);
+    print(true is Boolean);
+}
+
+// example: as_runtime_error
+// expect: runtime error
+let y: Base = new Base() in {
+    print(y is Child);
+    print(y as Child);
+}
+
 // type Animal {
 //     speak(): String => "...";
 // }

@@ -104,7 +104,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                 let Some(SemanticType::Custom(static_name)) =
                     analysis.inferred_types.get(&as_expr.expression.id)
                 else {
-                    return Ok(CodegenValue::Object(self.vtable_ptr_type().const_null()));
+                    return Err("No se encontro el tipo inferido para el cast 'as'".to_string());
                 };
 
                 let type_id = self.load_type_id(object_value, static_name)?;
@@ -126,15 +126,53 @@ impl<'ctx> CodeGenerator<'ctx> {
                 }
 
                 let matches = current.unwrap_or_else(|| self.bool_type.const_int(0, false));
-                let null_obj = self.vtable_ptr_type().const_null();
-                let casted = self
+                let function = self
                     .builder
-                    .build_select(matches, object_value, null_obj, "as_value")
-                    .map_err(|e| e.to_string())?
-                    .into_pointer_value();
-                Ok(CodegenValue::Object(casted))
+                    .get_insert_block()
+                    .and_then(|block| block.get_parent())
+                    .ok_or_else(|| "No se pudo determinar la funcion actual para 'as'".to_string())?;
+                let ok_block = self.context.append_basic_block(function, "as_ok");
+                let fail_block = self.context.append_basic_block(function, "as_fail");
+                let cont_block = self.context.append_basic_block(function, "as_cont");
+
+                self.builder
+                    .build_conditional_branch(matches, ok_block, fail_block)
+                    .map_err(|e| e.to_string())?;
+
+                self.builder.position_at_end(fail_block);
+                let panic_fn = self.get_panic_function();
+                let msg_name = self.fresh_tmp("as_panic_msg");
+                let msg = self
+                    .builder
+                    .build_global_string_ptr("Runtime error: cast 'as' failed", &msg_name)
+                    .map_err(|e| e.to_string())?;
+                self.builder
+                    .build_call(panic_fn, &[msg.as_pointer_value().into()], "as_panic")
+                    .map_err(|e| e.to_string())?;
+                self.builder.build_unreachable().map_err(|e| e.to_string())?;
+
+                self.builder.position_at_end(ok_block);
+                self.builder
+                    .build_unconditional_branch(cont_block)
+                    .map_err(|e| e.to_string())?;
+
+                self.builder.position_at_end(cont_block);
+                Ok(CodegenValue::Object(object_value))
             }
         }
+    }
+
+    fn get_panic_function(&self) -> inkwell::values::FunctionValue<'ctx> {
+        if let Some(function) = self.module.get_function("hulk_panic") {
+            return function;
+        }
+
+        let i8_ptr = self
+            .context
+            .i8_type()
+            .ptr_type(AddressSpace::default());
+        let fn_type = self.context.void_type().fn_type(&[i8_ptr.into()], false);
+        self.module.add_function("hulk_panic", fn_type, None)
     }
 
     pub(super) fn lower_new(
