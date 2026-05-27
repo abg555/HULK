@@ -394,6 +394,7 @@ impl SemanticAnalyzer {
 
         let parent = match &typ.parent {
             Some(TypeRef::Custom(name)) => Some(name.clone()),
+            _ if typ.name != "Object" => Some("Object".to_string()),
             _ => None,
         };
 
@@ -558,8 +559,12 @@ impl SemanticAnalyzer {
                 self.resolve_type_ref(Some(parent), self.type_decl_span(typ))
             {
                 if let Some(parent_shape) = self.type_shapes.get(&parent_name).cloned() {
+                    let has_explicit_parent_args = typ
+                        .parent_arg
+                        .as_ref()
+                        .is_some_and(|args| !args.is_empty());
                     // Implicit constructor parameter inheritance
-                    if typ.param.is_empty() && typ.parent_arg.is_none() && !parent_shape.ctor_params.is_empty() {
+                    if typ.param.is_empty() && !has_explicit_parent_args && !parent_shape.ctor_params.is_empty() {
                         implicit_ctor_params = Some(parent_shape.ctor_params.clone());
                     } else {
                         parent_info_for_validation = Some((parent_name, parent_shape));
@@ -957,12 +962,21 @@ impl SemanticAnalyzer {
             kind: SymbolKind::Type,
             typ: SemanticType::Custom(name.to_string()),
         });
+        
+        let mut methods = HashMap::new();
+        if name == "Object" {
+            methods.insert(
+                "toString".to_string(),
+                SemanticType::Function(Vec::new(), Box::new(SemanticType::String)),
+            );
+        }
+
         self.type_shapes.insert(
             name.to_string(),
             TypeShape {
                 ctor_params: Vec::new(),
                 fields: HashMap::new(),
-                methods: HashMap::new(),
+                methods,
                 parent: None,
             },
         );
