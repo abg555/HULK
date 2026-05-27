@@ -62,6 +62,9 @@ impl SemanticAnalyzer {
                     self.inferred_type_params
                         .insert(typ.name.clone(), inferred_type_params.clone());
 
+                    let prev_type_context = self.current_type_context.clone();
+                    self.current_type_context = Some(typ.name.clone());
+
                     let mut method_map: HashMap<String, HashMap<String, SemanticType>> =
                         HashMap::new();
                     let mut method_return_map: HashMap<String, SemanticType> = HashMap::new();
@@ -135,6 +138,8 @@ impl SemanticAnalyzer {
                             shape.methods.insert(method_name, method_type);
                         }
                     }
+
+                    self.current_type_context = prev_type_context;
                 }
                 _ => {}
             }
@@ -846,6 +851,23 @@ impl SemanticAnalyzer {
                         requirements,
                         &var.name,
                         value_ty,
+                        &mut self.diagnostics,
+                        expr.span,
+                    );
+                } else if let KindExpr::MemberAccess(member) = &assign.target.kind
+                    && let KindExpr::Variable(object) = &member.object.kind
+                    && object.name == "self"
+                    && let Some(type_name) = self.current_type_context.as_deref()
+                    && let Some(target_ty) = self.lookup_member_type(type_name, &member.field)
+                    && !matches!(target_ty, SemanticType::Unknown)
+                    && let KindExpr::Variable(var) = &assign.value.kind
+                    && inferable.contains(&var.name)
+                    && !is_shadowed(&var.name, shadow_stack)
+                {
+                    record_concrete(
+                        requirements,
+                        &var.name,
+                        target_ty,
                         &mut self.diagnostics,
                         expr.span,
                     );

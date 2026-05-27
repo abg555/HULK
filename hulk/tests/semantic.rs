@@ -1114,6 +1114,104 @@ let a: Animal = new Dog() in if (a is Dog) a.bark() else "none"
 }
 
 #[test]
+fn joins_if_branches_to_nearest_nominal_parent() {
+    let input = r#"
+type Animal {
+    speak(): String => "noise";
+}
+
+type Dog inherits Animal {}
+type Cat inherits Animal {}
+
+let animal = if (rand() > 0) new Dog() else new Cat() in animal.speak()
+"#;
+
+    let result = analyze_program(input);
+    assert!(
+        result.is_ok(),
+        "expected if branches to join as Animal, got: {result:?}"
+    );
+}
+
+#[test]
+fn joins_array_elements_to_nearest_nominal_parent() {
+    let input = r#"
+type Animal {
+    speak(): String => "noise";
+}
+
+type Dog inherits Animal {}
+type Cat inherits Animal {}
+
+let animals = [new Dog(), new Cat()] in animals[0].speak()
+"#;
+
+    let result = analyze_program(input);
+    assert!(
+        result.is_ok(),
+        "expected array element type to join as Animal, got: {result:?}"
+    );
+}
+
+#[test]
+fn object_accepts_builtin_and_custom_values() {
+    let input = r#"
+type Box {}
+
+{
+    let n: Object = 42 in print(n);
+    let s: Object = "hello" in print(s);
+    let b: Object = true in print(b);
+    let o: Object = new Box() in print(o);
+}
+"#;
+
+    let result = analyze_program(input);
+    assert!(
+        result.is_ok(),
+        "expected Object to accept all standard value types, got: {result:?}"
+    );
+}
+
+#[test]
+fn joins_unrelated_if_branches_to_object_not_unknown() {
+    let input = r#"
+let x: Number = if (rand() > 0) 1 else "text" in x
+"#;
+
+    let diagnostics = analyze_program(input).expect_err("expected Object/Number mismatch");
+    assert!(
+        diagnostics.iter().any(|d| {
+            d.message.contains("Binding x incompatible")
+                && d.message.contains("Number")
+                && d.message.contains("Object")
+        }),
+        "expected incompatible Number/Object diagnostic, got: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn protocols_can_use_object_in_signatures() {
+    let input = r#"
+protocol HasValue {
+    value(): Object;
+}
+
+type NumberBox {
+    value(): Number => 42;
+}
+
+let box: HasValue = new NumberBox() in print(box.value())
+"#;
+
+    let result = analyze_program(input);
+    assert!(
+        result.is_ok(),
+        "expected protocol return covariance through Object, got: {result:?}"
+    );
+}
+
+#[test]
 fn rejects_incompatible_as_cast() {
     let input = r#"
 let x: Number = 42 in x as String
@@ -1128,17 +1226,17 @@ let x: Number = 42 in x as String
 }
 
 #[test]
-fn rejects_typed_function_without_guaranteed_return_value() {
+fn accepts_typed_function_with_while_expression_body() {
     let input = r#"
     function f(): Number => while (true) 1;
     f()
     "#;
 
-    let diagnostics = analyze_program(input).expect_err("expected missing guaranteed return value");
-    assert!(diagnostics.iter().any(|d| {
-        d.message
-            .contains("no garantiza valor en todos los caminos")
-    }));
+    let result = analyze_program(input);
+    assert!(
+        result.is_ok(),
+        "expected while to be accepted as function body expression, got: {result:?}"
+    );
 }
 
 #[test]
@@ -1156,166 +1254,26 @@ fn accepts_typed_function_with_guaranteed_if_branches() {
 }
 
 #[test]
-fn rejects_let_initializer_without_guaranteed_value() {
+fn accepts_while_expression_in_value_positions() {
     let input = r#"
-    let x: Number = while (true) 1 in x
-    "#;
-
-    let diagnostics = analyze_program(input).expect_err("expected invalid let initializer");
-    assert!(
-        diagnostics
-            .iter()
-            .any(|d| d.message.contains("inicializador de x no garantiza valor"))
-    );
+type A {
+  n: Number = while (true) 1;
 }
 
-#[test]
-fn rejects_field_initializer_without_guaranteed_value() {
-    let input = r#"
-    type A {
-      n: Number = while (true) 1;
-    }
-    new A()
-    "#;
-
-    let diagnostics = analyze_program(input).expect_err("expected invalid field initializer");
-    assert!(
-        diagnostics
-            .iter()
-            .any(|d| d.message.contains("inicializador del campo n"))
-    );
-}
-
-#[test]
-fn rejects_assignment_rhs_without_guaranteed_value() {
-    let input = r#"
-    let x: Number = 0 in {
-      x := while (true) 1;
-      x
-    }
-    "#;
-
-    let diagnostics = analyze_program(input).expect_err("expected invalid assignment rhs");
-    assert!(
-        diagnostics
-            .iter()
-            .any(|d| d.message.contains("expresion asignada no garantiza valor"))
-    );
-}
-
-#[test]
-fn reports_variable_maybe_uninitialized_after_partial_if_assignment() {
-    let input = r#"
-let x: Number = while (true) 1 in {
-  if (true) x := 1 else 0;
-  x
+{
+  let x: Number = while (true) 1 in print(x);
+  let y: Number = 0 in {
+    y := while (true) 2;
+    print(y);
+  };
+  new A();
 }
 "#;
 
-    let diagnostics =
-        analyze_program(input).expect_err("expected maybe-uninitialized variable error");
+    let result = analyze_program(input);
     assert!(
-        diagnostics
-            .iter()
-            .any(|d| d.message.contains("variable x puede no estar inicializada"))
-    );
-}
-
-#[test]
-fn accepts_variable_initialized_in_all_if_branches() {
-    let input = r#"
-let x: Number = while (true) 1 in {
-  if (true) x := 1 else x := 2;
-  x
-}
-"#;
-
-    let diagnostics = analyze_program(input).expect_err("expected initializer error only");
-    assert!(
-        diagnostics
-            .iter()
-            .any(|d| d.message.contains("inicializador de x no garantiza valor"))
-    );
-    assert!(
-        !diagnostics
-            .iter()
-            .any(|d| d.message.contains("variable x puede no estar inicializada"))
-    );
-}
-
-#[test]
-fn reports_variable_maybe_uninitialized_after_while_assignment() {
-    let input = r#"
-let x: Number = while (true) 1 in {
-  while (false) x := 1;
-  x
-}
-"#;
-
-    let diagnostics =
-        analyze_program(input).expect_err("expected maybe-uninitialized variable error");
-    assert!(
-        diagnostics
-            .iter()
-            .any(|d| d.message.contains("variable x puede no estar inicializada"))
-    );
-}
-
-#[test]
-fn reports_variable_maybe_uninitialized_after_for_with_unknown_iterable() {
-    let input = r#"
-let x: Number = while (true) 1 in {
-    let ys = [1] in for (i in ys) x := i;
-  x
-}
-"#;
-
-    let diagnostics =
-        analyze_program(input).expect_err("expected maybe-uninitialized variable error");
-    assert!(
-        diagnostics
-            .iter()
-            .any(|d| d.message.contains("variable x puede no estar inicializada"))
-    );
-}
-
-#[test]
-fn accepts_variable_initialized_after_non_empty_array_for() {
-    let input = r#"
-let x: Number = while (true) 1 in {
-  for (i in [1]) x := i;
-  x
-}
-"#;
-
-    let diagnostics = analyze_program(input).expect_err("expected initializer error only");
-    assert!(
-        diagnostics
-            .iter()
-            .any(|d| d.message.contains("inicializador de x no garantiza valor"))
-    );
-    assert!(
-        !diagnostics
-            .iter()
-            .any(|d| d.message.contains("variable x puede no estar inicializada"))
-    );
-}
-
-#[test]
-fn reports_variable_maybe_uninitialized_after_empty_array_for() {
-    let input = r#"
-let x: Number = while (true) 1 in {
-  for (i in []) x := i;
-  x
-}
-"#;
-
-    let diagnostics =
-        analyze_program(input).expect_err("expected maybe-uninitialized variable error");
-    assert!(
-        diagnostics
-            .iter()
-            .any(|d| d.message.contains("variable x puede no estar inicializada"))
+        result.is_ok(),
+        "expected while expressions in value positions, got: {result:?}"
     );
 }
 
@@ -1340,220 +1298,145 @@ for (i in items) {
 }
 
 #[test]
-fn accepts_variable_initialized_after_while_true_assignment() {
+fn accepts_custom_type_implementing_iterable_protocol() {
     let input = r#"
-let x: Number = while (true) 1 in {
-  while (true) x := 1;
-  x
+type Counter {
+  next(): Boolean => true;
+  current(): Number => 1;
+}
+
+for (i in new Counter()) {
+  let n: Number = i in print(n)
 }
 "#;
 
-    let diagnostics = analyze_program(input).expect_err("expected initializer error only");
+    let result = analyze_program(input);
     assert!(
-        diagnostics
-            .iter()
-            .any(|d| d.message.contains("inicializador de x no garantiza valor"))
-    );
-    assert!(
-        !diagnostics
-            .iter()
-            .any(|d| d.message.contains("variable x puede no estar inicializada"))
+        result.is_ok(),
+        "expected custom Iterable implementation to work, got: {result:?}"
     );
 }
 
 #[test]
-fn reports_variable_maybe_uninitialized_after_while_false_assignment() {
+fn rejects_for_over_custom_type_missing_iterable_methods() {
     let input = r#"
-let x: Number = while (true) 1 in {
-  while (false) x := 1;
-  x
-}
+type NotIterable {}
+
+for (i in new NotIterable()) print(i)
 "#;
 
-    let diagnostics =
-        analyze_program(input).expect_err("expected maybe-uninitialized variable error");
+    let diagnostics = analyze_program(input).expect_err("expected Iterable conformance error");
     assert!(
         diagnostics
             .iter()
-            .any(|d| d.message.contains("variable x puede no estar inicializada"))
+            .any(|d| d.message.contains("implemente el protocolo Iterable")),
+        "expected Iterable diagnostic, got: {diagnostics:?}"
     );
 }
 
 #[test]
-fn reports_variable_maybe_uninitialized_after_while_with_unknown_condition() {
+fn rejects_for_iterator_use_when_current_type_is_incompatible() {
     let input = r#"
-let x: Number = while (true) 1 in {
-  while (rand() > 0) x := 1;
-  x
+type Words {
+  next(): Boolean => true;
+  current(): String => "one";
+}
+
+for (i in new Words()) {
+  let n: Number = i in print(n)
 }
 "#;
 
-    let diagnostics =
-        analyze_program(input).expect_err("expected maybe-uninitialized variable error");
+    let diagnostics = analyze_program(input).expect_err("expected iterator element type mismatch");
     assert!(
-        diagnostics
-            .iter()
-            .any(|d| d.message.contains("variable x puede no estar inicializada"))
+        diagnostics.iter().any(|d| {
+            d.message.contains("Binding n incompatible")
+                && d.message.contains("Number")
+                && d.message.contains("String")
+        }),
+        "expected Number/String diagnostic, got: {diagnostics:?}"
     );
 }
 
 #[test]
-fn accepts_variable_initialized_after_while_constant_true_condition() {
+fn accepts_vector_where_iterable_protocol_is_expected() {
     let input = r#"
-let x: Number = while (true) 1 in {
-  while (1 < 2) x := 1;
-  x
-}
+let items: Iterable = [1, 2, 3] in print(items)
 "#;
 
-    let diagnostics = analyze_program(input).expect_err("expected initializer error only");
+    let result = analyze_program(input);
     assert!(
-        diagnostics
-            .iter()
-            .any(|d| d.message.contains("inicializador de x no garantiza valor"))
-    );
-    assert!(
-        !diagnostics
-            .iter()
-            .any(|d| d.message.contains("variable x puede no estar inicializada"))
+        result.is_ok(),
+        "expected vectors to conform to Iterable, got: {result:?}"
     );
 }
 
 #[test]
-fn reports_variable_maybe_uninitialized_after_while_constant_false_condition() {
+fn accepts_vector_builtin_members() {
     let input = r#"
-let x: Number = while (true) 1 in {
-  while (1 > 2) x := 1;
-  x
+let numbers = [1, 2, 3] in {
+  let size: Number = numbers.size() in print(size);
+  let has_next: Boolean = numbers.next() in print(has_next);
+  let current: Number = numbers.current() in print(current);
 }
 "#;
 
-    let diagnostics =
-        analyze_program(input).expect_err("expected maybe-uninitialized variable error");
+    let result = analyze_program(input);
     assert!(
-        diagnostics
-            .iter()
-            .any(|d| d.message.contains("variable x puede no estar inicializada"))
+        result.is_ok(),
+        "expected vector size/next/current members, got: {result:?}"
     );
 }
 
 #[test]
-fn accepts_variable_initialized_after_non_empty_constant_range_for() {
+fn rejects_unknown_vector_member() {
     let input = r#"
-let x: Number = while (true) 1 in {
-  for (i in range(0, 1)) x := i;
-  x
-}
+let numbers = [1, 2, 3] in numbers.clear()
 "#;
 
-    let diagnostics = analyze_program(input).expect_err("expected initializer error only");
+    let diagnostics = analyze_program(input).expect_err("expected unknown vector member error");
     assert!(
         diagnostics
             .iter()
-            .any(|d| d.message.contains("inicializador de x no garantiza valor"))
-    );
-    assert!(
-        !diagnostics
-            .iter()
-            .any(|d| d.message.contains("variable x puede no estar inicializada"))
+            .any(|d| d.message.contains("vector no define el miembro clear")),
+        "expected unknown vector member diagnostic, got: {diagnostics:?}"
     );
 }
 
 #[test]
-fn reports_variable_maybe_uninitialized_after_empty_constant_range_for() {
+fn rejects_vector_size_after_erasing_to_iterable() {
     let input = r#"
-let x: Number = while (true) 1 in {
-  for (i in range(0, 0)) x := i;
-  x
-}
+let numbers: Iterable = [1, 2, 3] in numbers.size()
 "#;
 
-    let diagnostics =
-        analyze_program(input).expect_err("expected maybe-uninitialized variable error");
+    let diagnostics = analyze_program(input).expect_err("expected Iterable member error");
     assert!(
         diagnostics
             .iter()
-            .any(|d| d.message.contains("variable x puede no estar inicializada"))
+            .any(|d| d.message.contains("Iterable no define el miembro size")),
+        "expected Iterable missing size diagnostic, got: {diagnostics:?}"
     );
 }
 
 #[test]
-fn accepts_variable_initialized_after_while_arithmetic_constant_true_condition() {
+fn accepts_for_expression_in_value_positions() {
     let input = r#"
-let x: Number = while (true) 1 in {
-  while ((1 + 1) == (3 - 1)) x := 1;
-  x
+function first(): Number => for (i in [1]) i;
+
+{
+  let x: Number = for (i in [1]) i in print(x);
+  let y: Number = 0 in {
+    y := for (i in range(0, 1)) i;
+    print(y);
+  };
+  first();
 }
 "#;
 
-    let diagnostics = analyze_program(input).expect_err("expected initializer error only");
+    let result = analyze_program(input);
     assert!(
-        diagnostics
-            .iter()
-            .any(|d| d.message.contains("inicializador de x no garantiza valor"))
-    );
-    assert!(
-        !diagnostics
-            .iter()
-            .any(|d| d.message.contains("variable x puede no estar inicializada"))
-    );
-}
-
-#[test]
-fn reports_variable_maybe_uninitialized_after_while_arithmetic_constant_false_condition() {
-    let input = r#"
-let x: Number = while (true) 1 in {
-  while ((2 * 3) < (5 - 1)) x := 1;
-  x
-}
-"#;
-
-    let diagnostics =
-        analyze_program(input).expect_err("expected maybe-uninitialized variable error");
-    assert!(
-        diagnostics
-            .iter()
-            .any(|d| d.message.contains("variable x puede no estar inicializada"))
-    );
-}
-
-#[test]
-fn accepts_variable_initialized_after_non_empty_arithmetic_range_for() {
-    let input = r#"
-let x: Number = while (true) 1 in {
-  for (i in range(1 + 1, 5 - 2)) x := i;
-  x
-}
-"#;
-
-    let diagnostics = analyze_program(input).expect_err("expected initializer error only");
-    assert!(
-        diagnostics
-            .iter()
-            .any(|d| d.message.contains("inicializador de x no garantiza valor"))
-    );
-    assert!(
-        !diagnostics
-            .iter()
-            .any(|d| d.message.contains("variable x puede no estar inicializada"))
-    );
-}
-
-#[test]
-fn reports_variable_maybe_uninitialized_after_empty_arithmetic_range_for() {
-    let input = r#"
-let x: Number = while (true) 1 in {
-  for (i in range(2 * 2, 1 + 1)) x := i;
-  x
-}
-"#;
-
-    let diagnostics =
-        analyze_program(input).expect_err("expected maybe-uninitialized variable error");
-    assert!(
-        diagnostics
-            .iter()
-            .any(|d| d.message.contains("variable x puede no estar inicializada"))
+        result.is_ok(),
+        "expected for expressions in value positions, got: {result:?}"
     );
 }
 
@@ -1634,5 +1517,206 @@ new Dog()
     assert!(
         result.is_ok(),
         "expected parent without ctor args to work, got: {result:?}"
+    );
+}
+
+#[test]
+fn accepts_implicit_and_explicit_constructor_inheritance() {
+    let input = r#"
+type Point(x: Number, y: Number) {
+    x: Number = x;
+    y: Number = y;
+
+    getX(): Number => self.x;
+    getY(): Number => self.y;
+}
+
+type PolarPoint inherits Point {
+    rho(): Number => sqrt(self.getX() ^ 2 + self.getY() ^ 2);
+}
+
+type PolarPoint2(phi: Number, rho: Number) inherits Point(rho * sin(phi), rho * cos(phi)) {
+    rho2(): Number => rho;
+}
+
+{
+    let p = new PolarPoint(3, 4) in
+        print("rho: " @ p.rho());
+
+    let q = new PolarPoint2(1.0, 2.0) in
+        print("rho2: " @ q.rho2());
+}
+"#;
+
+    let result = analyze_program(input);
+    assert!(
+        result.is_ok(),
+        "expected no semantic errors for valid inheritance, got: {result:?}"
+    );
+}
+
+#[test]
+fn infers_number_type_from_attribute_initializers() {
+    let input = r#"
+        type Point {
+            x = 0;
+            y = 0;
+
+            // Si x e y se infieren como Number, 
+            // esta operación aritmética debe ser válida.
+            add_coords(): Number => self.x + self.y;
+        }
+
+        let p = new Point() in p.add_coords()
+    "#;
+
+    let result = analyze_program(input);
+    
+    assert!(
+        result.is_ok(),
+        "Falló la inferencia de tipos para x e y: {result:?}"
+    );
+}
+
+#[test]
+fn accepts_corrected_polar_point_implementation() {
+    let input = r#"
+        type Point(ax: Number, ay: Number) {
+            x: Number = ax;
+            y: Number = ay;
+
+            getX(): Number => self.x;
+            getY(): Number => self.y;
+        }
+
+        type PolarPoint(ax: Number, ay: Number)
+            inherits Point(ax, ay)
+        {
+            rho(): Number =>
+                sqrt(self.getX() ^ 2 + self.getY() ^ 2);
+        }
+
+        type PolarPoint2(phi: Number, rho: Number)
+            inherits Point(rho * sin(phi), rho * cos(phi))
+        {
+            r: Number = rho;
+
+            rho2(): Number => self.r;
+        }
+
+        {
+            let p = new PolarPoint(3, 4) in
+                p.rho();
+
+            let q = new PolarPoint2(1.0, 2.0) in
+                q.rho2();
+        }
+    "#;
+
+    let result = analyze_program(input);
+
+    assert!(
+        result.is_ok(),
+        "El compilador debería aceptar la implementación corregida. Error: {:?}",
+        result.err()
+    );
+}
+
+#[test]
+fn accepts_inherited_constructor_arguments() {
+    let input = r#"
+        type Point(x: Number, y: Number) {
+        x: Number = x;
+        y: Number = y;
+
+        getX(): Number => self.x;
+        getY(): Number => self.y;
+    }
+
+    type PolarPoint inherits Point {
+        rho(): Number => sqrt(self.getX() ^ 2 + self.getY() ^ 2);
+    }
+
+    type PolarPoint2(phi: Number, rho: Number) inherits Point(rho * sin(phi), rho * cos(phi)) {
+        rho2(): Number => rho;
+    }
+
+    {
+        let p = new PolarPoint(3, 4) in
+            print("rho: " @ p.rho());
+
+        let q = new PolarPoint2(1.0, 2.0) in
+            print("rho2: " @ q.rho2());
+    }
+    "#;
+
+    let result = analyze_program(input);
+
+    assert!(
+        result.is_ok(),
+        "El compilador debería aceptar la implementación corregida. Error: {:?}",
+        result.err()
+    );
+}
+
+#[test]
+fn infers_point_fields_as_number() {
+    let input = r#"
+        type Point {
+            x = 0;
+            y = 0;
+
+            getX() => self.x;
+            getY() => self.y;
+
+            setX(x) => self.x := x;
+            setY(y) => self.y := y;
+        }
+
+        {
+            let p = new Point() in {
+                p.setX(42);
+                p.setY(100);
+
+                p.getX() + p.getY();
+            };
+        }
+    "#;
+
+    let result = analyze_program(input);
+
+    assert!(
+        result.is_ok(),
+        "x e y deberían inferirse como Number. Error: {:?}",
+        result.err()
+    );
+}
+
+#[test]
+fn rejects_non_number_assignment_to_inferred_point_fields() {
+    let input = r#"
+        type Point {
+            x = 0;
+            y = 0;
+
+            getX() => self.x;
+            getY() => self.y;
+
+            setX(x) => self.x := x;
+            setY(y) => self.y := y;
+        }
+
+        {
+            let p = new Point() in {
+                p.setX("hello");
+            };
+        }
+    "#;
+
+    let result = analyze_program(input);
+
+    assert!(
+        result.is_err(),
+        "El compilador debería rechazar asignar String a un campo inferido como Number"
     );
 }

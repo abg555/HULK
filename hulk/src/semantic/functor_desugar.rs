@@ -581,7 +581,7 @@ impl<'a> FunctorDesugar<'a> {
                 is_variadic: false,
             }],
             parent: None,
-            parent_arg: Vec::new(),
+            parent_arg: Some(Vec::new()),
             fields: vec![FieldDecl {
                 name: "__fn".to_string(),
                 type_annotation: fn_type_ref,

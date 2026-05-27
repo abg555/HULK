@@ -64,6 +64,24 @@ fn doc_for_loop_example() {
 }
 
 #[test]
+fn doc_vector_members_example() {
+    let input = r#"
+function mean(numbers: Number[]): Number {
+    let total = 0 in {
+        for (x in numbers)
+            total := total + x;
+
+        total / numbers.size();
+    }
+}
+
+let numbers = [1, 2, 3, 4, 5] in print(mean(numbers))
+"#;
+
+    assert!(analyze_program(input).is_ok());
+}
+
+#[test]
 fn doc_while_example() {
     let input = r#"let a = 3 in while (a >= 0) { a := a - 1 };"#;
     assert!(analyze_program(input).is_ok());
