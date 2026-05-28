@@ -1456,19 +1456,17 @@ new Dog()
 }
 
 #[test]
-fn rejects_parent_constructor_args_missing() {
+fn accepts_parent_constructor_args_missing_as_implicit_inheritance() {
     let input = r#"
 type Animal(x: Number) {}
 type Dog inherits Animal() {}
-new Dog()
+new Dog(42)
 "#;
 
-    let diagnostics = analyze_program(input).expect_err("expected parent constructor arity error");
+    let result = analyze_program(input);
     assert!(
-        diagnostics
-            .iter()
-            .any(|d| d.message.contains("Constructor de Animal espera")
-                && d.message.contains("argumentos"))
+        result.is_ok(),
+        "expected empty parent args to behave like implicit constructor inheritance, got: {result:?}"
     );
 }
 
@@ -1718,5 +1716,59 @@ fn rejects_non_number_assignment_to_inferred_point_fields() {
     assert!(
         result.is_err(),
         "El compilador debería rechazar asignar String a un campo inferido como Number"
+    );
+}
+
+#[test]
+fn accepts_print_new_object_using_inherited_tostring() {
+    let input = r#"
+type Dog {
+    name: String = "Fido";
+}
+
+print(new Dog())
+"#;
+
+    let result = analyze_program(input);
+    assert!(
+        result.is_ok(),
+        "expected print(new Dog()) to be valid via Object.toString inheritance, got: {result:?}"
+    );
+}
+
+#[test]
+fn accepts_valid_tostring_override_signature() {
+    let input = r#"
+type Dog {
+    toString(): String => "Dog";
+}
+
+print(new Dog())
+"#;
+
+    let result = analyze_program(input);
+    assert!(
+        result.is_ok(),
+        "expected valid toString override to pass semantic analysis, got: {result:?}"
+    );
+}
+
+#[test]
+fn reports_invalid_tostring_override_signature() {
+    let input = r#"
+type Dog {
+    toString(x: Number): String => "Dog";
+}
+
+print(new Dog())
+"#;
+
+    let diagnostics = analyze_program(input).expect_err("expected semantic errors");
+
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.message.contains("Override incompatible") && d.message.contains("toString")),
+        "expected override compatibility error for invalid toString signature, got: {diagnostics:?}"
     );
 }
