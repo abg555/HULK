@@ -1,4 +1,4 @@
-use hulk::analyze_program;
+use hulk::{analyze_program, semantic::types::SemanticType};
 use std::fs;
 
 #[test]
@@ -349,8 +349,8 @@ fn reports_import_cycles_between_modules() {
     fs::write(a_path, "import semanticcycleb\n").expect("failed to write cycle module A");
     fs::write(b_path, "import semanticcyclea\n").expect("failed to write cycle module B");
 
-    let diagnostics = analyze_program("import semanticcyclea")
-        .expect_err("expected import cycle diagnostic");
+    let diagnostics =
+        analyze_program("import semanticcyclea").expect_err("expected import cycle diagnostic");
 
     fs::remove_file(a_path).ok();
     fs::remove_file(b_path).ok();
@@ -1569,7 +1569,7 @@ fn infers_number_type_from_attribute_initializers() {
     "#;
 
     let result = analyze_program(input);
-    
+
     assert!(
         result.is_ok(),
         "Falló la inferencia de tipos para x e y: {result:?}"
@@ -1687,6 +1687,42 @@ fn infers_point_fields_as_number() {
         result.is_ok(),
         "x e y deberían inferirse como Number. Error: {:?}",
         result.err()
+    );
+    let analysis = result.expect("expected Point program to be valid");
+    let point = analysis
+        .type_shapes
+        .get("Point")
+        .expect("Point shape should be present");
+
+    assert_eq!(point.fields.get("x"), Some(&SemanticType::Number));
+    assert_eq!(point.fields.get("y"), Some(&SemanticType::Number));
+    assert_eq!(
+        point.methods.get("getX"),
+        Some(&SemanticType::Function(
+            Vec::new(),
+            Box::new(SemanticType::Number)
+        ))
+    );
+    assert_eq!(
+        point.methods.get("getY"),
+        Some(&SemanticType::Function(
+            Vec::new(),
+            Box::new(SemanticType::Number)
+        ))
+    );
+    assert_eq!(
+        point.methods.get("setX"),
+        Some(&SemanticType::Function(
+            vec![SemanticType::Number],
+            Box::new(SemanticType::Number)
+        ))
+    );
+    assert_eq!(
+        point.methods.get("setY"),
+        Some(&SemanticType::Function(
+            vec![SemanticType::Number],
+            Box::new(SemanticType::Number)
+        ))
     );
 }
 

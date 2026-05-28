@@ -196,12 +196,9 @@ impl SemanticAnalyzer {
             return left.clone();
         }
 
-        if let (SemanticType::Vector(left_inner), SemanticType::Vector(right_inner)) =
-            (left, right)
+        if let (SemanticType::Vector(left_inner), SemanticType::Vector(right_inner)) = (left, right)
         {
-            return SemanticType::Vector(Box::new(
-                self.common_supertype(left_inner, right_inner),
-            ));
+            return SemanticType::Vector(Box::new(self.common_supertype(left_inner, right_inner)));
         }
 
         if self.is_compatible_type(left, right) {
@@ -317,11 +314,7 @@ impl SemanticAnalyzer {
             return None;
         };
 
-        if params.is_empty() {
-            Some(*ret)
-        } else {
-            None
-        }
+        if params.is_empty() { Some(*ret) } else { None }
     }
 
     /// Comprueba que un protocolo sea compatible o extienda al protocolo esperado.
@@ -493,10 +486,8 @@ impl SemanticAnalyzer {
             "next" => SemanticType::Function(Vec::new(), Box::new(SemanticType::Boolean)),
             "current" => SemanticType::Function(Vec::new(), Box::new(element_type.clone())),
             _ => {
-                self.diagnostics.error(
-                    format!("El vector no define el miembro {}", member),
-                    span,
-                );
+                self.diagnostics
+                    .error(format!("El vector no define el miembro {}", member), span);
                 SemanticType::Unknown
             }
         }
