@@ -63,6 +63,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                 let result = current.unwrap_or_else(|| self.bool_type.const_int(0, false));
                 Ok(CodegenValue::Bool(result))
             }
+            CodegenValue::Vector(_) => Ok(CodegenValue::Bool(self.bool_type.const_int(0, false))),
         }
     }
 
@@ -159,6 +160,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                 self.builder.position_at_end(cont_block);
                 Ok(CodegenValue::Object(object_value))
             }
+            CodegenValue::Vector(_) => Err("Cast 'as' no soportado para vectores todavia".to_string()),
         }
     }
 
@@ -333,10 +335,11 @@ impl<'ctx> CodeGenerator<'ctx> {
                 return Err(format!("El padre de {} debe ser un tipo nombrado", type_name));
             };
 
+            let parent_args = decl.parent_arg.as_deref().unwrap_or(&[]);
             self.initialize_object_fields(
                 concrete_type,
                 &parent_name,
-                &decl.parent_arg,
+                parent_args,
                 analysis,
                 object_struct,
                 typed_ptr,
@@ -400,7 +403,7 @@ impl<'ctx> CodeGenerator<'ctx> {
             .map_err(|e| e.to_string())
     }
 
-    fn get_malloc_function(&self) -> inkwell::values::FunctionValue<'ctx> {
+    pub(super) fn get_malloc_function(&self) -> inkwell::values::FunctionValue<'ctx> {
         if let Some(function) = self.module.get_function("malloc") {
             return function;
         }

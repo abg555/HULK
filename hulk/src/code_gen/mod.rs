@@ -27,6 +27,7 @@ pub struct CodeGenerator<'ctx> {
     vtable_globals: HashMap<String, GlobalValue<'ctx>>,
     type_ids: HashMap<String, u64>,
     method_orders: HashMap<String, Vec<String>>,
+    vector_struct: StructType<'ctx>,
     current_type: Option<String>,
     current_method: Option<String>,
 }
@@ -44,6 +45,7 @@ pub enum ValueKind {
     Bool,
     String,
     Object,
+    Vector,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -52,6 +54,7 @@ pub enum CodegenValue<'ctx> {
     Bool(IntValue<'ctx>),
     String(PointerValue<'ctx>),
     Object(PointerValue<'ctx>),
+    Vector(PointerValue<'ctx>),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -67,6 +70,7 @@ impl<'ctx> CodegenValue<'ctx> {
             CodegenValue::Bool(_) => ValueKind::Bool,
             CodegenValue::String(_) => ValueKind::String,
             CodegenValue::Object(_) => ValueKind::Object,
+            CodegenValue::Vector(_) => ValueKind::Vector,
         }
     }
 
@@ -97,10 +101,28 @@ impl<'ctx> CodegenValue<'ctx> {
             _ => Err("Se esperaba Object".to_string()),
         }
     }
+
+    pub fn into_vector(self) -> Result<PointerValue<'ctx>, String> {
+        match self {
+            CodegenValue::Vector(value) => Ok(value),
+            _ => Err("Se esperaba Vector".to_string()),
+        }
+    }
 }
 
 impl<'ctx> CodeGenerator<'ctx> {
     pub fn new(context: &'ctx Context, module_name: &str) -> Self {
+        let vector_struct = context.struct_type(
+            &[
+                context.i64_type().into(),
+                context
+                    .i8_type()
+                    .ptr_type(inkwell::AddressSpace::default())
+                    .into(),
+            ],
+            false,
+        );
+
         Self {
             context,
             module: context.create_module(module_name),
@@ -116,6 +138,7 @@ impl<'ctx> CodeGenerator<'ctx> {
             vtable_globals: HashMap::new(),
             type_ids: HashMap::new(),
             method_orders: HashMap::new(),
+            vector_struct,
             current_type: None,
             current_method: None,
         }
@@ -460,6 +483,11 @@ impl<'ctx> CodeGenerator<'ctx> {
                     .ptr_type(inkwell::AddressSpace::default())
                     .const_null(),
             )),
+            ValueKind::Vector => Ok(CodegenValue::Vector(
+                self.vector_struct
+                    .ptr_type(inkwell::AddressSpace::default())
+                    .const_null(),
+            )),
         }
     }
 
@@ -473,6 +501,11 @@ impl<'ctx> CodeGenerator<'ctx> {
             ValueKind::String | ValueKind::Object => Ok(
                 self.context
                     .i8_type()
+                    .ptr_type(inkwell::AddressSpace::default())
+                    .into(),
+            ),
+            ValueKind::Vector => Ok(
+                self.vector_struct
                     .ptr_type(inkwell::AddressSpace::default())
                     .into(),
             ),
@@ -495,6 +528,11 @@ impl<'ctx> CodeGenerator<'ctx> {
             SemanticType::Custom(_) => Ok(
                 self.context
                     .i8_type()
+                    .ptr_type(inkwell::AddressSpace::default())
+                    .into(),
+            ),
+            SemanticType::Vector(_) => Ok(
+                self.vector_struct
                     .ptr_type(inkwell::AddressSpace::default())
                     .into(),
             ),
@@ -663,6 +701,17 @@ impl<'ctx> CodeGenerator<'ctx> {
                         .into_pointer_value(),
                 ))
             }
+            ValueKind::Vector => {
+                let vec_ptr_type = self
+                    .vector_struct
+                    .ptr_type(inkwell::AddressSpace::default());
+                Ok(CodegenValue::Vector(
+                    self.builder
+                        .build_load(vec_ptr_type, ptr, name)
+                        .map_err(|e| e.to_string())?
+                        .into_pointer_value(),
+                ))
+            }
         }
     }
 
@@ -690,6 +739,12 @@ impl<'ctx> CodeGenerator<'ctx> {
                     .map_err(|e| e.to_string())?;
                 Ok(())
             }
+            CodegenValue::Vector(vector) => {
+                self.builder
+                    .build_store(ptr, vector)
+                    .map_err(|e| e.to_string())?;
+                Ok(())
+            }
         }
     }
 
@@ -702,6 +757,7 @@ impl<'ctx> CodeGenerator<'ctx> {
             SemanticType::Boolean => Ok(ValueKind::Bool),
             SemanticType::String => Ok(ValueKind::String),
             SemanticType::Custom(_) => Ok(ValueKind::Object),
+            SemanticType::Vector(_) => Ok(ValueKind::Vector),
             _ => Err(format!("Tipo no soportado en codegen: {}", typ)),
         }
     }

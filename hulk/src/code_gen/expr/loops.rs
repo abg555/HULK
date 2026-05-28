@@ -89,6 +89,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                 ]);
                 CodegenValue::Object(phi.as_basic_value().into_pointer_value())
             }
+            ValueKind::Vector => return Err("While no soporta vectores todavia".to_string()),
         };
 
         Ok(phi)
@@ -244,6 +245,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                 ]);
                 CodegenValue::Object(phi.as_basic_value().into_pointer_value())
             }
+            ValueKind::Vector => return Err("For no soporta vectores todavia".to_string()),
         };
 
         Ok(phi)

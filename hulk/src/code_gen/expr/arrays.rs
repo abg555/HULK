@@ -1,0 +1,614 @@
+use inkwell::AddressSpace;
+use inkwell::types::BasicType;
+
+use crate::ast::{ArrayExpr, IndexExpr, Expr};
+use crate::ast::ArrayComprehensionExpr;
+use crate::semantic::SemanticAnalysis;
+use crate::semantic::types::SemanticType;
+
+use super::super::{CodeGenerator, CodegenValue, ValueKind};
+
+impl<'ctx> CodeGenerator<'ctx> {
+    pub(super) fn lower_array(
+        &mut self,
+        expr: &Expr,
+        array: &ArrayExpr,
+        analysis: &SemanticAnalysis,
+    ) -> Result<CodegenValue<'ctx>, String> {
+        // Determine element semantic type
+        let elem_sem = if let Some(SemanticType::Vector(inner)) = analysis.inferred_types.get(&expr.id)
+        {
+            *inner.clone()
+        } else if !array.elements.is_empty() {
+            analysis
+                .inferred_types
+                .get(&array.elements[0].id)
+                .cloned()
+                .ok_or_else(|| "No se encontro el tipo inferido del elemento".to_string())?
+        } else {
+            return Err("No se pudo determinar el tipo de elementos del vector".to_string());
+        };
+
+        let elem_kind = self.value_kind_from_semantic(&elem_sem)?;
+
+        // length
+        let len = array.elements.len() as u64;
+        let len_const = self.context.i64_type().const_int(len, false);
+
+        // allocate vector struct
+        let struct_size = self
+            .vector_struct
+            .size_of()
+            .ok_or_else(|| "No se pudo calcular tamano del vector_struct".to_string())?;
+        let malloc_fn = self.get_malloc_function();
+        let struct_size_i64 = self
+            .builder
+            .build_int_cast(struct_size, self.context.i64_type(), "vec_struct_size")
+            .map_err(|e| e.to_string())?;
+        let raw_ptr = self
+            .builder
+            .build_call(malloc_fn, &[struct_size_i64.into()], "vec_alloc")
+            .map_err(|e| e.to_string())?
+            .try_as_basic_value()
+            .left()
+            .ok_or_else(|| "malloc no devolvio un valor".to_string())?
+            .into_pointer_value();
+
+        let vec_typed = self
+            .builder
+            .build_pointer_cast(
+                raw_ptr,
+                self.vector_struct.ptr_type(AddressSpace::default()),
+                "vec_typed",
+            )
+            .map_err(|e| e.to_string())?;
+
+        // allocate data buffer
+        let elem_basic = self.basic_type_for_semantic(&elem_sem)?;
+        let elem_size = elem_basic
+            .size_of()
+            .ok_or_else(|| "No se pudo calcular tamano del elemento".to_string())?;
+        let elem_size_i64 = self
+            .builder
+            .build_int_cast(elem_size, self.context.i64_type(), "elem_size")
+            .map_err(|e| e.to_string())?;
+        let total = self
+            .builder
+            .build_int_mul(elem_size_i64, len_const, "data_size")
+            .map_err(|e| e.to_string())?;
+
+        let raw_data = self
+            .builder
+            .build_call(malloc_fn, &[total.into()], "data_alloc")
+            .map_err(|e| e.to_string())?
+            .try_as_basic_value()
+            .left()
+            .ok_or_else(|| "malloc no devolvio un valor".to_string())?
+            .into_pointer_value();
+
+        // cast raw_data to element pointer type
+        let elem_ptr_type = match elem_basic {
+            inkwell::types::BasicTypeEnum::FloatType(ft) => ft.ptr_type(AddressSpace::default()),
+            inkwell::types::BasicTypeEnum::IntType(it) => it.ptr_type(AddressSpace::default()),
+            inkwell::types::BasicTypeEnum::PointerType(pt) => pt.ptr_type(AddressSpace::default()),
+            inkwell::types::BasicTypeEnum::StructType(st) => st.ptr_type(AddressSpace::default()),
+            inkwell::types::BasicTypeEnum::ArrayType(at) => at.ptr_type(AddressSpace::default()),
+            inkwell::types::BasicTypeEnum::VectorType(vt) => vt.ptr_type(AddressSpace::default()),
+        };
+
+        let data_typed = self
+            .builder
+            .build_pointer_cast(raw_data, elem_ptr_type, "data_typed")
+            .map_err(|e| e.to_string())?;
+
+        // store length and data pointer into struct fields
+        let len_slot = self
+            .builder
+            .build_struct_gep(self.vector_struct, vec_typed, 0, "vec_len_slot")
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_store(len_slot, len_const)
+            .map_err(|e| e.to_string())?;
+
+        let data_slot = self
+            .builder
+            .build_struct_gep(self.vector_struct, vec_typed, 1, "vec_data_slot")
+            .map_err(|e| e.to_string())?;
+        let data_cast = self
+            .builder
+            .build_pointer_cast(
+                data_typed,
+                self.context.i8_type().ptr_type(AddressSpace::default()),
+                "data_cast",
+            )
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_store(data_slot, data_cast)
+            .map_err(|e| e.to_string())?;
+
+        // fill elements
+        for (i, elem_expr) in array.elements.iter().enumerate() {
+            let value = self.lower_expr(elem_expr, analysis)?;
+
+            let idx_val = self
+                .context
+                .i64_type()
+                .const_int(i as u64, false);
+            let byte_offset = self
+                .builder
+                .build_int_mul(idx_val, elem_size_i64, &format!("byte_offset_{}", i))
+                .map_err(|e| e.to_string())?;
+
+            let base_i8 = self
+                .builder
+                .build_pointer_cast(
+                    data_typed,
+                    self.context.i8_type().ptr_type(AddressSpace::default()),
+                    &format!("data_i8_{}", i),
+                )
+                .map_err(|e| e.to_string())?;
+
+            let elem_i8_ptr = unsafe {
+                self.builder
+                    .build_in_bounds_gep(
+                        self.context.i8_type(),
+                        base_i8,
+                        &[byte_offset],
+                        &format!("elem_i8_{}", i),
+                    )
+                    .map_err(|e| e.to_string())?
+            };
+
+            let elem_ptr = self
+                .builder
+                .build_pointer_cast(elem_i8_ptr, elem_ptr_type, &format!("elem_ptr_{}", i))
+                .map_err(|e| e.to_string())?;
+
+            match (elem_kind, value) {
+                (ValueKind::Number, CodegenValue::Number(n)) => {
+                    self.builder
+                        .build_store(elem_ptr, n)
+                        .map_err(|e| e.to_string())?;
+                }
+                (ValueKind::Bool, CodegenValue::Bool(b)) => {
+                    self.builder
+                        .build_store(elem_ptr, b)
+                        .map_err(|e| e.to_string())?;
+                }
+                (ValueKind::String, CodegenValue::String(s))
+                | (ValueKind::Object, CodegenValue::Object(s))
+                | (ValueKind::Vector, CodegenValue::Vector(s)) => {
+                    self.builder
+                        .build_store(elem_ptr, s)
+                        .map_err(|e| e.to_string())?;
+                }
+                _ => return Err("Tipo de elemento y valor no coinciden al inicializar vector".to_string()),
+            }
+        }
+
+        Ok(CodegenValue::Vector(vec_typed))
+    }
+
+    pub(super) fn lower_array_comprehension(
+        &mut self,
+        comp: &ArrayComprehensionExpr,
+        analysis: &SemanticAnalysis,
+    ) -> Result<CodegenValue<'ctx>, String> {
+        // Evaluate iterable
+        let iterable_val = self.lower_expr(&comp.iterable, analysis)?;
+        let (src_ptr, elem_sem) = match iterable_val {
+            CodegenValue::Vector(ptr) => {
+                let Some(SemanticType::Vector(inner)) = analysis.inferred_types.get(&comp.iterable.id) else {
+                    return Err("No se encontro el tipo inferido del iterable".to_string());
+                };
+                (ptr, *inner.clone())
+            }
+            _ => return Err("Array comprehension solo soporta iterables vectoriales".to_string()),
+        };
+
+        let elem_kind = self.value_kind_from_semantic(&elem_sem)?;
+
+        // load length from source
+        let len_slot = self
+            .builder
+            .build_struct_gep(self.vector_struct, src_ptr, 0, "src_len_slot")
+            .map_err(|e| e.to_string())?;
+        let len_val = self
+            .builder
+            .build_load(self.context.i64_type(), len_slot, "src_len")
+            .map_err(|e| e.to_string())?
+            .into_int_value();
+
+        // allocate dest vector struct
+        let struct_size = self
+            .vector_struct
+            .size_of()
+            .ok_or_else(|| "No se pudo calcular tamano del vector_struct".to_string())?;
+        let malloc_fn = self.get_malloc_function();
+        let struct_size_i64 = self
+            .builder
+            .build_int_cast(struct_size, self.context.i64_type(), "vec_struct_size")
+            .map_err(|e| e.to_string())?;
+        let raw_ptr = self
+            .builder
+            .build_call(malloc_fn, &[struct_size_i64.into()], "vec_alloc")
+            .map_err(|e| e.to_string())?
+            .try_as_basic_value()
+            .left()
+            .ok_or_else(|| "malloc no devolvio un valor".to_string())?
+            .into_pointer_value();
+
+        let vec_typed = self
+            .builder
+            .build_pointer_cast(
+                raw_ptr,
+                self.vector_struct.ptr_type(AddressSpace::default()),
+                "vec_typed",
+            )
+            .map_err(|e| e.to_string())?;
+
+        // allocate data buffer: total = elem_size * len_val
+        let elem_basic = self.basic_type_for_semantic(&elem_sem)?;
+        let elem_size = elem_basic
+            .size_of()
+            .ok_or_else(|| "No se pudo calcular tamano del elemento".to_string())?;
+        let elem_size_i64 = self
+            .builder
+            .build_int_cast(elem_size, self.context.i64_type(), "elem_size")
+            .map_err(|e| e.to_string())?;
+
+        let total = self
+            .builder
+            .build_int_mul(elem_size_i64, len_val, "data_size")
+            .map_err(|e| e.to_string())?;
+
+        let raw_data = self
+            .builder
+            .build_call(malloc_fn, &[total.into()], "data_alloc")
+            .map_err(|e| e.to_string())?
+            .try_as_basic_value()
+            .left()
+            .ok_or_else(|| "malloc no devolvio un valor".to_string())?
+            .into_pointer_value();
+
+        // cast raw_data to element pointer type
+        let elem_ptr_type = match elem_basic {
+            inkwell::types::BasicTypeEnum::FloatType(ft) => ft.ptr_type(AddressSpace::default()),
+            inkwell::types::BasicTypeEnum::IntType(it) => it.ptr_type(AddressSpace::default()),
+            inkwell::types::BasicTypeEnum::PointerType(pt) => pt.ptr_type(AddressSpace::default()),
+            inkwell::types::BasicTypeEnum::StructType(st) => st.ptr_type(AddressSpace::default()),
+            inkwell::types::BasicTypeEnum::ArrayType(at) => at.ptr_type(AddressSpace::default()),
+            inkwell::types::BasicTypeEnum::VectorType(vt) => vt.ptr_type(AddressSpace::default()),
+        };
+
+        let data_typed = self
+            .builder
+            .build_pointer_cast(raw_data, elem_ptr_type, "data_typed")
+            .map_err(|e| e.to_string())?;
+
+        // store length and data pointer into dest struct
+        let len_slot_dst = self
+            .builder
+            .build_struct_gep(self.vector_struct, vec_typed, 0, "dst_len_slot")
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_store(len_slot_dst, len_val)
+            .map_err(|e| e.to_string())?;
+
+        let data_slot_dst = self
+            .builder
+            .build_struct_gep(self.vector_struct, vec_typed, 1, "dst_data_slot")
+            .map_err(|e| e.to_string())?;
+        let data_cast = self
+            .builder
+            .build_pointer_cast(
+                data_typed,
+                self.context.i8_type().ptr_type(AddressSpace::default()),
+                "data_cast",
+            )
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_store(data_slot_dst, data_cast)
+            .map_err(|e| e.to_string())?;
+
+        // Loop: for i in 0..len_val { src_elem = load(src, i); let var = src_elem; element_val = lower_expr(element); store(dst, i, element_val) }
+        let function = self
+            .builder
+            .get_insert_block()
+            .and_then(|b| b.get_parent())
+            .ok_or_else(|| "No se encontro funcion actual".to_string())?;
+
+        let loop_cond = self.context.append_basic_block(function, "comp_cond");
+        let loop_body = self.context.append_basic_block(function, "comp_body");
+        let loop_after = self.context.append_basic_block(function, "comp_after");
+
+        // idx = 0
+        let idx_ptr = self
+            .builder
+            .build_alloca(self.context.i64_type(), "comp_idx")
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_store(idx_ptr, self.context.i64_type().const_int(0, false))
+            .map_err(|e| e.to_string())?;
+
+        self.builder
+            .build_unconditional_branch(loop_cond)
+            .map_err(|e| e.to_string())?;
+
+        // cond
+        self.builder.position_at_end(loop_cond);
+        let idx_val = self
+            .builder
+            .build_load(self.context.i64_type(), idx_ptr, "idx_val")
+            .map_err(|e| e.to_string())?
+            .into_int_value();
+        let cmp = self
+            .builder
+            .build_int_compare(inkwell::IntPredicate::ULT, idx_val, len_val, "cmp")
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_conditional_branch(cmp, loop_body, loop_after)
+            .map_err(|e| e.to_string())?;
+
+        // body
+        self.builder.position_at_end(loop_body);
+
+        // compute source element pointer
+        let byte_offset = self
+            .builder
+            .build_int_mul(idx_val, elem_size_i64, "byte_offset")
+            .map_err(|e| e.to_string())?;
+
+        let base_i8 = self
+            .builder
+            .build_pointer_cast(
+                data_typed,
+                self.context.i8_type().ptr_type(AddressSpace::default()),
+                "src_data_i8",
+            )
+            .map_err(|e| e.to_string())?;
+
+        let src_elem_i8 = unsafe {
+            self.builder
+                .build_in_bounds_gep(self.context.i8_type(), base_i8, &[byte_offset], "src_elem_i8")
+                .map_err(|e| e.to_string())?
+        };
+
+        let src_elem_ptr = self
+            .builder
+            .build_pointer_cast(src_elem_i8, elem_ptr_type, "src_elem_ptr")
+            .map_err(|e| e.to_string())?;
+
+        // load source element value according to kind
+        let src_value = match elem_kind {
+            ValueKind::Number => CodegenValue::Number(
+                self.builder
+                    .build_load(self.f64_type, src_elem_ptr, "load_src_elem")
+                    .map_err(|e| e.to_string())?
+                    .into_float_value(),
+            ),
+            ValueKind::Bool => CodegenValue::Bool(
+                self.builder
+                    .build_load(self.bool_type, src_elem_ptr, "load_src_elem")
+                    .map_err(|e| e.to_string())?
+                    .into_int_value(),
+            ),
+            ValueKind::String => CodegenValue::String(
+                self.builder
+                    .build_load(
+                        self.context.i8_type().ptr_type(AddressSpace::default()),
+                        src_elem_ptr,
+                        "load_src_elem",
+                    )
+                    .map_err(|e| e.to_string())?
+                    .into_pointer_value(),
+            ),
+            ValueKind::Object => CodegenValue::Object(
+                self.builder
+                    .build_load(
+                        self.context.i8_type().ptr_type(AddressSpace::default()),
+                        src_elem_ptr,
+                        "load_src_elem",
+                    )
+                    .map_err(|e| e.to_string())?
+                    .into_pointer_value(),
+            ),
+            ValueKind::Vector => CodegenValue::Vector(
+                self.builder
+                    .build_load(
+                        self.vector_struct.ptr_type(AddressSpace::default()),
+                        src_elem_ptr,
+                        "load_src_elem",
+                    )
+                    .map_err(|e| e.to_string())?
+                    .into_pointer_value(),
+            ),
+        };
+
+        // bind iteration variable
+        self.enter_scope();
+        let var_slot = self.alloca_for_kind(&elem_kind, &comp.variable)?;
+        self.store_value(var_slot, src_value)?;
+        self.insert_var(
+            comp.variable.clone(),
+            super::super::VarInfo {
+                ptr: var_slot,
+                kind: elem_kind,
+            },
+        );
+
+        // evaluate element expression
+        let result = self.lower_expr(&comp.element, analysis)?;
+
+        // store result into dest buffer at idx
+        let dest_base_i8 = self
+            .builder
+            .build_pointer_cast(
+                data_typed,
+                self.context.i8_type().ptr_type(AddressSpace::default()),
+                "dst_data_i8",
+            )
+            .map_err(|e| e.to_string())?;
+
+        let dest_elem_i8 = unsafe {
+            self.builder
+                .build_in_bounds_gep(self.context.i8_type(), dest_base_i8, &[byte_offset], "dst_elem_i8")
+                .map_err(|e| e.to_string())?
+        };
+
+        let dest_elem_ptr = self
+            .builder
+            .build_pointer_cast(dest_elem_i8, elem_ptr_type, "dst_elem_ptr")
+            .map_err(|e| e.to_string())?;
+
+        self.store_value(dest_elem_ptr, result)?;
+
+        // cleanup loop variable
+        self.exit_scope();
+
+        // idx = idx + 1
+        let next = self
+            .builder
+            .build_int_add(idx_val, self.context.i64_type().const_int(1, false), "idx_next")
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_store(idx_ptr, next)
+            .map_err(|e| e.to_string())?;
+
+        self.builder
+            .build_unconditional_branch(loop_cond)
+            .map_err(|e| e.to_string())?;
+
+        // after
+        self.builder.position_at_end(loop_after);
+
+        Ok(CodegenValue::Vector(vec_typed))
+    }
+
+    pub(super) fn lower_index(
+        &mut self,
+        index: &IndexExpr,
+        analysis: &SemanticAnalysis,
+    ) -> Result<CodegenValue<'ctx>, String> {
+        let obj = self.lower_expr(&index.object, analysis)?;
+        let (vec_ptr, elem_sem) = match obj {
+            CodegenValue::Vector(ptr) => {
+                // find element semantic type
+                let Some(SemanticType::Vector(inner)) = analysis.inferred_types.get(&index.object.id) else {
+                    return Err("No se encontro el tipo inferido del vector".to_string());
+                };
+                (ptr, *inner.clone())
+            }
+            _ => return Err("Indexing solo soportado en vectores".to_string()),
+        };
+
+        let elem_kind = self.value_kind_from_semantic(&elem_sem)?;
+
+        // load data pointer
+        let data_slot = self
+            .builder
+            .build_struct_gep(self.vector_struct, vec_ptr, 1, "vec_data_slot")
+            .map_err(|e| e.to_string())?;
+        let data_i8 = self
+            .builder
+            .build_load(self.context.i8_type().ptr_type(AddressSpace::default()), data_slot, "data_ptr")
+            .map_err(|e| e.to_string())?
+            .into_pointer_value();
+
+        // compute index
+        let idx_val = self.lower_expr(&index.index, analysis)?;
+        let idx_i64 = match idx_val {
+            CodegenValue::Number(n) => self
+                .builder
+                .build_float_to_signed_int(n, self.context.i64_type(), "idx_i64")
+                .map_err(|e| e.to_string())?,
+            _ => return Err("Indice debe ser Number".to_string()),
+        };
+
+        // element size
+        let elem_basic = self.basic_type_for_semantic(&elem_sem)?;
+        let elem_size = elem_basic
+            .size_of()
+            .ok_or_else(|| "No se pudo obtener tamano de elemento".to_string())?;
+        let elem_size_i64 = self
+            .builder
+            .build_int_cast(elem_size, self.context.i64_type(), "elem_size")
+            .map_err(|e| e.to_string())?;
+
+        let byte_offset = self
+            .builder
+            .build_int_mul(idx_i64, elem_size_i64, "byte_offset")
+            .map_err(|e| e.to_string())?;
+
+        let elem_i8_ptr = unsafe {
+            self.builder
+                .build_in_bounds_gep(
+                    self.context.i8_type(),
+                    data_i8,
+                    &[byte_offset],
+                    "elem_i8",
+                )
+                .map_err(|e| e.to_string())?
+        };
+
+        let elem_ptr_type = match elem_basic {
+            inkwell::types::BasicTypeEnum::FloatType(ft) => ft.ptr_type(AddressSpace::default()),
+            inkwell::types::BasicTypeEnum::IntType(it) => it.ptr_type(AddressSpace::default()),
+            inkwell::types::BasicTypeEnum::PointerType(pt) => pt.ptr_type(AddressSpace::default()),
+            inkwell::types::BasicTypeEnum::StructType(st) => st.ptr_type(AddressSpace::default()),
+            inkwell::types::BasicTypeEnum::ArrayType(at) => at.ptr_type(AddressSpace::default()),
+            inkwell::types::BasicTypeEnum::VectorType(vt) => vt.ptr_type(AddressSpace::default()),
+        };
+
+        let elem_ptr = self
+            .builder
+            .build_pointer_cast(elem_i8_ptr, elem_ptr_type, "elem_ptr")
+            .map_err(|e| e.to_string())?;
+
+        // load value
+        match elem_kind {
+            ValueKind::Number => Ok(CodegenValue::Number(
+                self.builder
+                    .build_load(self.f64_type, elem_ptr, "load_elem")
+                    .map_err(|e| e.to_string())?
+                    .into_float_value(),
+            )),
+            ValueKind::Bool => Ok(CodegenValue::Bool(
+                self.builder
+                    .build_load(self.bool_type, elem_ptr, "load_elem")
+                    .map_err(|e| e.to_string())?
+                    .into_int_value(),
+            )),
+            ValueKind::String => Ok(CodegenValue::String(
+                self.builder
+                    .build_load(
+                        self.context.i8_type().ptr_type(AddressSpace::default()),
+                        elem_ptr,
+                        "load_elem",
+                    )
+                    .map_err(|e| e.to_string())?
+                    .into_pointer_value(),
+            )),
+            ValueKind::Object => Ok(CodegenValue::Object(
+                self.builder
+                    .build_load(
+                        self.context.i8_type().ptr_type(AddressSpace::default()),
+                        elem_ptr,
+                        "load_elem",
+                    )
+                    .map_err(|e| e.to_string())?
+                    .into_pointer_value(),
+            )),
+            ValueKind::Vector => Ok(CodegenValue::Vector(
+                self.builder
+                    .build_load(
+                        self.vector_struct.ptr_type(AddressSpace::default()),
+                        elem_ptr,
+                        "load_elem",
+                    )
+                    .map_err(|e| e.to_string())?
+                    .into_pointer_value(),
+            )),
+        }
+    }
+}

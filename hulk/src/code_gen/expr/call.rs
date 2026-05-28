@@ -84,6 +84,9 @@ impl<'ctx> CodeGenerator<'ctx> {
                 super::super::ValueKind::Bool => value.into_bool()?.into(),
                 super::super::ValueKind::String => value.into_string()?.into(),
                 super::super::ValueKind::Object => value.into_object()?.into(),
+                super::super::ValueKind::Vector => {
+                    return Err("Vector no soportado aun en llamadas".to_string())
+                }
             };
             args.push(arg);
         }
@@ -102,6 +105,7 @@ impl<'ctx> CodeGenerator<'ctx> {
             super::super::ValueKind::Bool => Ok(CodegenValue::Bool(value.into_int_value())),
             super::super::ValueKind::String => Ok(CodegenValue::String(value.into_pointer_value())),
             super::super::ValueKind::Object => Ok(CodegenValue::Object(value.into_pointer_value())),
+            super::super::ValueKind::Vector => Err("Vector no soportado aun en llamadas".to_string()),
         }
     }
 
@@ -172,6 +176,9 @@ impl<'ctx> CodeGenerator<'ctx> {
                 super::super::ValueKind::Bool => value.into_bool()?.into(),
                 super::super::ValueKind::String => value.into_string()?.into(),
                 super::super::ValueKind::Object => value.into_object()?.into(),
+                super::super::ValueKind::Vector => {
+                    return Err("Vector no soportado aun en llamadas".to_string())
+                }
             };
             args.push(arg);
         }
@@ -190,6 +197,7 @@ impl<'ctx> CodeGenerator<'ctx> {
             super::super::ValueKind::Bool => Ok(CodegenValue::Bool(value.into_int_value())),
             super::super::ValueKind::String => Ok(CodegenValue::String(value.into_pointer_value())),
             super::super::ValueKind::Object => Ok(CodegenValue::Object(value.into_pointer_value())),
+            super::super::ValueKind::Vector => Err("Vector no soportado aun en llamadas".to_string()),
         }
     }
 
@@ -262,6 +270,9 @@ impl<'ctx> CodeGenerator<'ctx> {
                 super::super::ValueKind::Bool => value.into_bool()?.into(),
                 super::super::ValueKind::String => value.into_string()?.into(),
                 super::super::ValueKind::Object => value.into_object()?.into(),
+                super::super::ValueKind::Vector => {
+                    return Err("Vectores no soportados aun en llamadas".to_string())
+                }
             };
             args.push(arg);
         }
@@ -289,6 +300,7 @@ impl<'ctx> CodeGenerator<'ctx> {
             super::super::ValueKind::Bool => Ok(CodegenValue::Bool(value.into_int_value())),
             super::super::ValueKind::String => Ok(CodegenValue::String(value.into_pointer_value())),
             super::super::ValueKind::Object => Ok(CodegenValue::Object(value.into_pointer_value())),
+            super::super::ValueKind::Vector => Err("Vectores no soportados aun en llamadas".to_string()),
         }
     }
 
@@ -322,6 +334,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                 self.print_object(argument, analysis, printf_fn, object_val)?;
                 Ok(CodegenValue::Object(object_val))
             }
+            CodegenValue::Vector(_) => Err("Print no soporta vectores todavia".to_string()),
         }
     }
 

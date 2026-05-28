@@ -6,6 +6,7 @@ mod let_assign;
 mod literals;
 mod loops;
 mod objects;
+mod arrays;
 mod unary;
 
 use crate::ast::{Expr, KindExpr};
@@ -41,6 +42,9 @@ impl<'ctx> CodeGenerator<'ctx> {
             KindExpr::For(for_expr) => self.lower_for(for_expr, analysis),
             KindExpr::Is(is_expr) => self.lower_is(is_expr, analysis),
             KindExpr::As(as_expr) => self.lower_as(as_expr, analysis),
+            KindExpr::Array(array_expr) => self.lower_array(expr, array_expr, analysis),
+            KindExpr::Index(index_expr) => self.lower_index(index_expr, analysis),
+            KindExpr::ArrayComprehension(comp) => self.lower_array_comprehension(comp, analysis),
             _ => Err("Solo se soportan literales, booleanos y expresiones basicas".to_string()),
         }
     }

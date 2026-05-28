@@ -138,6 +138,9 @@ impl<'ctx> CodeGenerator<'ctx> {
                 ]);
                 Ok(CodegenValue::Object(phi.as_basic_value().into_pointer_value()))
             }
+            ValueKind::Vector => {
+                return Err("If no soporta vectores todavia".to_string())
+            }
         }
     }
 }

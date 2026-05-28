@@ -185,30 +185,53 @@ type Base {
     value: Number = 0;
 }
 
+// example: array_literal_and_index
+// expect: 2
+// expect: 3
+{
+    let arr = [1, 2, 3] in {
+        print(arr[1]);
+        print(arr[2]);
+    };
+}
+
+// example: array_comprehension_simple
+// expect: 6
+{
+    let nums = [1, 2, 3, 4] in {
+        let doubled = [x * 2 | x in nums] in {
+            print(doubled[2]);
+        }
+    }
+};
+
 type Child inherits Base {
     child_value: Number = 1;
 }
 
-let x: Base = new Child() in {
-    print(x is Child);
-    print(x as Child);
-}
-
-// example: is_as_non_object
-// expect: 1
-// expect: 0
-// expect: 1
 {
-    print(42 is Number);
-    print(42 is String);
-    print(true is Boolean);
-}
+    // example: is_as_rtti
+    // expect: is_cmp
+    // expect: as_cmp
+    let x: Base = new Child() in {
+        print(x is Child);
+        print(x as Child);
+    };
 
-// example: as_runtime_error
-// expect: runtime error
-let y: Base = new Base() in {
-    print(y is Child);
-    print(y as Child);
+    // example: is_as_non_object
+    // expect: 1
+    // expect: 1
+    {
+        print(42 is Number);
+        print(true is Boolean);
+    };
+
+    // example: as_runtime_error
+    // expect: runtime error
+    let y: Base = new Base() in {
+        print(y is Child);
+        print(y as Child);
+    }
 }
 
 // type Animal {

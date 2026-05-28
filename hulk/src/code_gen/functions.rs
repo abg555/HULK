@@ -110,6 +110,9 @@ impl<'ctx> CodeGenerator<'ctx> {
                             .build_store(ptr, arg.into_pointer_value())
                             .map_err(|e| e.to_string())?;
                     }
+                    ValueKind::Vector => {
+                        return Err("Vectores no soportados aun en parametros".to_string())
+                    }
                 }
 
                 self.insert_var(
@@ -143,6 +146,9 @@ impl<'ctx> CodeGenerator<'ctx> {
                     self.builder
                         .build_return(Some(&obj_val))
                         .map_err(|e| e.to_string())?;
+                }
+                ValueKind::Vector => {
+                    return Err("Vectores no soportados aun como retorno".to_string())
                 }
             }
 
@@ -219,6 +225,9 @@ impl<'ctx> CodeGenerator<'ctx> {
                                 .build_store(ptr, arg.into_pointer_value())
                                 .map_err(|e| e.to_string())?;
                         }
+                        ValueKind::Vector => {
+                            return Err("Vectores no soportados aun en parametros".to_string())
+                        }
                     }
 
                     self.insert_var(
@@ -253,6 +262,9 @@ impl<'ctx> CodeGenerator<'ctx> {
                             .build_return(Some(&obj_val))
                             .map_err(|e| e.to_string())?;
                     }
+                    ValueKind::Vector => {
+                        return Err("Vectores no soportados aun como retorno".to_string())
+                    }
                 }
 
                 self.exit_scope();
@@ -284,6 +296,10 @@ impl<'ctx> CodeGenerator<'ctx> {
             ValueKind::String | ValueKind::Object => self
                 .context
                 .i8_type()
+                .ptr_type(inkwell::AddressSpace::default())
+                .fn_type(&param_types, false),
+            ValueKind::Vector => self
+                .vector_struct
                 .ptr_type(inkwell::AddressSpace::default())
                 .fn_type(&param_types, false),
         }
