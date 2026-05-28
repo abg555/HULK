@@ -187,26 +187,26 @@ impl SemanticAnalyzer {
                         self.loading_modules.clone(),
                     );
                     match module_analyzer.analyze(&program) {
-                    Ok(ctx) => {
-                        self.module_cache = module_analyzer.module_cache;
-                        self.namespaces = module_analyzer.namespaces;
-                        self.loading_modules = module_analyzer.loading_modules;
-                        self.module_cache.insert(module.to_string(), ctx.clone());
-                        self.namespaces
-                            .insert(module.to_string(), Self::build_public_namespace(&ctx));
-                        true
-                    }
-                    Err(diags) => {
-                        self.module_cache = module_analyzer.module_cache;
-                        self.namespaces = module_analyzer.namespaces;
-                        self.loading_modules = module_analyzer.loading_modules;
-                        for d in diags {
-                            self.diagnostics.push(d);
+                        Ok(ctx) => {
+                            self.module_cache = module_analyzer.module_cache;
+                            self.namespaces = module_analyzer.namespaces;
+                            self.loading_modules = module_analyzer.loading_modules;
+                            self.module_cache.insert(module.to_string(), ctx.clone());
+                            self.namespaces
+                                .insert(module.to_string(), Self::build_public_namespace(&ctx));
+                            true
                         }
-                        false
+                        Err(diags) => {
+                            self.module_cache = module_analyzer.module_cache;
+                            self.namespaces = module_analyzer.namespaces;
+                            self.loading_modules = module_analyzer.loading_modules;
+                            for d in diags {
+                                self.diagnostics.push(d);
+                            }
+                            false
+                        }
                     }
                 }
-                },
                 Err(diags) => {
                     for d in diags {
                         self.diagnostics.push(d);
@@ -433,7 +433,8 @@ impl SemanticAnalyzer {
                 }
             }
             KindExpr::MemberAccess(member) => {
-                let object_ty = self.infer_field_initializer_type_hint(typ, known_fields, &member.object);
+                let object_ty =
+                    self.infer_field_initializer_type_hint(typ, known_fields, &member.object);
                 match object_ty {
                     SemanticType::Custom(type_name) if type_name == typ.name => known_fields
                         .get(&member.field)
@@ -489,7 +490,8 @@ impl SemanticAnalyzer {
                         &array.elements[0],
                     );
                     for element in array.elements.iter().skip(1) {
-                        let current = self.infer_field_initializer_type_hint(typ, known_fields, element);
+                        let current =
+                            self.infer_field_initializer_type_hint(typ, known_fields, element);
                         element_ty = self.common_supertype(&element_ty, &current);
                     }
                     SemanticType::Vector(Box::new(element_ty))
@@ -559,12 +561,13 @@ impl SemanticAnalyzer {
                 self.resolve_type_ref(Some(parent), self.type_decl_span(typ))
             {
                 if let Some(parent_shape) = self.type_shapes.get(&parent_name).cloned() {
-                    let has_explicit_parent_args = typ
-                        .parent_arg
-                        .as_ref()
-                        .is_some_and(|args| !args.is_empty());
+                    let has_explicit_parent_args =
+                        typ.parent_arg.as_ref().is_some_and(|args| !args.is_empty());
                     // Implicit constructor parameter inheritance
-                    if typ.param.is_empty() && !has_explicit_parent_args && !parent_shape.ctor_params.is_empty() {
+                    if typ.param.is_empty()
+                        && !has_explicit_parent_args
+                        && !parent_shape.ctor_params.is_empty()
+                    {
                         implicit_ctor_params = Some(parent_shape.ctor_params.clone());
                     } else {
                         parent_info_for_validation = Some((parent_name, parent_shape));
@@ -962,7 +965,7 @@ impl SemanticAnalyzer {
             kind: SymbolKind::Type,
             typ: SemanticType::Custom(name.to_string()),
         });
-        
+
         let mut methods = HashMap::new();
         if name == "Object" {
             methods.insert(

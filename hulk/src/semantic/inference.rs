@@ -240,104 +240,7 @@ impl SemanticAnalyzer {
 
         let mut return_types = Vec::new();
         for ret_expr in return_exprs {
-            match &ret_expr.kind {
-                KindExpr::Literal(lit) => match lit.value {
-                    LiteralValue::Number(_) => return_types.push(SemanticType::Number),
-                    LiteralValue::String(_) => return_types.push(SemanticType::String),
-                    LiteralValue::Bool(_) => return_types.push(SemanticType::Boolean),
-                },
-                KindExpr::Block(block) if block.expressions.is_empty() => {
-                    return_types.push(SemanticType::Boolean);
-                }
-                KindExpr::Array(_) => {
-                    return_types.push(SemanticType::Vector(Box::new(SemanticType::Unknown)))
-                }
-                KindExpr::Call(call) => {
-                    // Special-case: if this is a call to `print`, try to infer return
-                    // from the first argument (so functions ending with print(<expr>)
-                    // can have a more precise return type for codegen).
-                    if let KindExpr::Variable(var) = &call.callee.kind {
-                        if var.name == "print" {
-                            if let Some(first_arg) = call.arguments.get(0) {
-                                // Infer simple argument types: literals, binary arithmetic,
-                                // or lookup variable types from symbol table.
-                                match &first_arg.kind {
-                                    KindExpr::Literal(lit) => match lit.value {
-                                        LiteralValue::Number(_) => {
-                                            return_types.push(SemanticType::Number);
-                                            continue;
-                                        }
-                                        LiteralValue::String(_) => {
-                                            return_types.push(SemanticType::String);
-                                            continue;
-                                        }
-                                        LiteralValue::Bool(_) => {
-                                            return_types.push(SemanticType::Boolean);
-                                            continue;
-                                        }
-                                    },
-                                    KindExpr::Binary(bin) => {
-                                        use crate::ast::BinaryOperator::*;
-                                        match bin.operator {
-                                            Add | Sub | Mul | Div | Pow | Mod => {
-                                                return_types.push(SemanticType::Number);
-                                                continue;
-                                            }
-                                            And | Or => {
-                                                return_types.push(SemanticType::Boolean);
-                                                continue;
-                                            }
-                                            Concat | FullConcat => {
-                                                return_types.push(SemanticType::String);
-                                                continue;
-                                            }
-                                            _ => {}
-                                        }
-                                    }
-                                    KindExpr::Variable(v) => {
-                                        if let Some(sym) = self.symbols.lookup(&v.name) {
-                                            return_types.push(sym.typ.clone());
-                                            continue;
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        }
-                    }
-                    // If callee is a top-level function with known signature, use its return type.
-                    if let KindExpr::Variable(var) = &call.callee.kind {
-                        if let Some(sym) = self.symbols.lookup(&var.name) {
-                            if let SemanticType::Function(_params, ret) = &sym.typ {
-                                return_types.push((**ret).clone());
-                                continue;
-                            }
-                        }
-                    }
-
-                    // Try to resolve member calls like `obj.method()` via type shapes.
-                    if let KindExpr::MemberAccess(member) = &call.callee.kind {
-                        if let KindExpr::Variable(obj_var) = &member.object.kind {
-                            if let Some(sym) = self.symbols.lookup(&obj_var.name) {
-                                if let SemanticType::Custom(type_name) = &sym.typ {
-                                    if let Some(shape) = self.type_shapes.get(type_name) {
-                                        if let Some(method_ty) = shape.methods.get(&member.field) {
-                                            if let SemanticType::Function(_p, ret) = method_ty {
-                                                return_types.push((**ret).clone());
-                                                continue;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Fallback
-                    return_types.push(SemanticType::Unknown);
-                }
-                _ => return_types.push(SemanticType::Unknown),
-            }
+            return_types.push(self.infer_expr_type_hint(ret_expr));
         }
 
         if return_types.is_empty() {
@@ -359,6 +262,102 @@ impl SemanticAnalyzer {
             first
         } else {
             SemanticType::Unknown
+        }
+    }
+
+    /// Inferencia sintactica ligera usada antes del chequeo completo.
+    fn infer_expr_type_hint(&self, expr: &Expr) -> SemanticType {
+        match &expr.kind {
+            KindExpr::Literal(lit) => match lit.value {
+                LiteralValue::Number(_) => SemanticType::Number,
+                LiteralValue::String(_) => SemanticType::String,
+                LiteralValue::Bool(_) => SemanticType::Boolean,
+            },
+            KindExpr::Variable(var) => {
+                if var.name == "self" {
+                    self.current_type_context
+                        .as_ref()
+                        .map(|name| SemanticType::Custom(name.clone()))
+                        .unwrap_or(SemanticType::Unknown)
+                } else {
+                    self.symbols
+                        .lookup(&var.name)
+                        .map(|sym| sym.typ.clone())
+                        .unwrap_or(SemanticType::Unknown)
+                }
+            }
+            KindExpr::MemberAccess(member) => {
+                let object_ty = self.infer_expr_type_hint(&member.object);
+                match object_ty {
+                    SemanticType::Custom(type_name) => self
+                        .lookup_member_type(&type_name, &member.field)
+                        .unwrap_or(SemanticType::Unknown),
+                    SemanticType::Vector(inner) => match member.field.as_str() {
+                        "size" => SemanticType::Function(Vec::new(), Box::new(SemanticType::Number)),
+                        "next" => SemanticType::Function(Vec::new(), Box::new(SemanticType::Boolean)),
+                        "current" => SemanticType::Function(Vec::new(), Box::new(*inner)),
+                        _ => SemanticType::Unknown,
+                    },
+                    SemanticType::Function(_, _) if member.field == "invoke" => object_ty,
+                    _ => SemanticType::Unknown,
+                }
+            }
+            KindExpr::Call(call) => {
+                if let KindExpr::Variable(var) = &call.callee.kind
+                    && var.name == "print"
+                {
+                    return call
+                        .arguments
+                        .first()
+                        .map(|arg| self.infer_expr_type_hint(arg))
+                        .unwrap_or(SemanticType::Unknown);
+                }
+
+                match self.infer_expr_type_hint(&call.callee) {
+                    SemanticType::Function(_, ret) => *ret,
+                    SemanticType::Custom(type_name) => {
+                        if let Some(SemanticType::Function(_, ret)) =
+                            self.lookup_functor_invoke_type(&type_name)
+                        {
+                            *ret
+                        } else {
+                            SemanticType::Unknown
+                        }
+                    }
+                    _ => SemanticType::Unknown,
+                }
+            }
+            KindExpr::Binary(bin) => {
+                use crate::ast::BinaryOperator::*;
+
+                match bin.operator {
+                    Add | Sub | Mul | Div | Pow | Mod => SemanticType::Number,
+                    And | Or => SemanticType::Boolean,
+                    Concat | FullConcat => SemanticType::String,
+                    Equal | NotEqual | Less | Greater | LessEqual | GreaterEqual => {
+                        SemanticType::Boolean
+                    }
+                }
+            }
+            KindExpr::Unary(unary) => match unary.operator {
+                crate::ast::UnaryOperator::Negate => SemanticType::Number,
+                crate::ast::UnaryOperator::Not => SemanticType::Boolean,
+            },
+            KindExpr::Assign(assign) => self.infer_expr_type_hint(&assign.target),
+            KindExpr::Block(block) => block
+                .expressions
+                .last()
+                .map(|expr| self.infer_expr_type_hint(expr))
+                .unwrap_or(SemanticType::Boolean),
+            KindExpr::Array(array) => {
+                let element_ty = array
+                    .elements
+                    .first()
+                    .map(|expr| self.infer_expr_type_hint(expr))
+                    .unwrap_or(SemanticType::Unknown);
+                SemanticType::Vector(Box::new(element_ty))
+            }
+            _ => SemanticType::Unknown,
         }
     }
 
