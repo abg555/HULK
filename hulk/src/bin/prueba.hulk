@@ -110,18 +110,18 @@
 // }
 
 
-// type Point(x0: Number, y0: Number) {
-//     x: Number = x0;
-//     y: Number = y0;
+// type Point {
+//     x = 3;
+//     y = 0;
 
-//     getX(): Number => self.x;
-//     getY(): Number => self.y;
+//     getX() => self.x;
+//     getY() => self.y;
 
-//     setX(new_x: Number): Number => self.x := new_x;
-//     setY(new_y: Number): Number => self.y := new_y;
+//     setX(x) => self.x := x;
+//     setY(y) => self.y := y;
 // }
 
-// let pt = new Point(3,4) in
+// let pt = new Point() in
 //     print("x: " @ pt.getX() @ "; y: " @ pt.getY());
 
 // type Point(x: Number, y: Number) {
@@ -132,12 +132,13 @@
 //     getY(): Number => self.y;
 // }
 
-// type PolarPoint inherits Point {
+// type PolarPoint(x: Number, y: Number) inherits Point(x, y) {
 //     rho(): Number => sqrt(self.getX() ^ 2 + self.getY() ^ 2);
 // }
 
 // type PolarPoint2(phi: Number, rho: Number) inherits Point(rho * sin(phi), rho * cos(phi)) {
-//     rho2(): Number => rho;
+//     rho_saved: Number = rho;
+//     rho2(): Number => self.rho_saved;
 // }
 
 // {
@@ -147,6 +148,8 @@
 //     let q = new PolarPoint2(1.0, 2.0) in
 //         print("rho2: " @ q.rho2());
 // }
+
+
 // type Box {
 //     value: Number = 0;
 
@@ -178,61 +181,6 @@
 
 // let a: Animal = new Dog() in print(a.speak())
 
-// // example: is_as_rtti
-// // expect: is_cmp
-// // expect: as_cmp
-type Base {
-    value: Number = 0;
-}
-
-// example: array_literal_and_index
-// expect: 2
-// expect: 3
-{
-    let arr = [1, 2, 3] in {
-        print(arr[1]);
-        print(arr[2]);
-    };
-}
-
-// example: array_comprehension_simple
-// expect: 6
-{
-    let nums = [1, 2, 3, 4] in {
-        let doubled = [x * 2 | x in nums] in {
-            print(doubled[2]);
-        }
-    }
-};
-
-type Child inherits Base {
-    child_value: Number = 1;
-}
-
-{
-    // example: is_as_rtti
-    // expect: is_cmp
-    // expect: as_cmp
-    let x: Base = new Child() in {
-        print(x is Child);
-        print(x as Child);
-    };
-
-    // example: is_as_non_object
-    // expect: 1
-    // expect: 1
-    {
-        print(42 is Number);
-        print(true is Boolean);
-    };
-
-    // example: as_runtime_error
-    // expect: runtime error
-    let y: Base = new Base() in {
-        print(y is Child);
-        print(y as Child);
-    }
-}
 
 // type Animal {
 //     speak(): String => "...";

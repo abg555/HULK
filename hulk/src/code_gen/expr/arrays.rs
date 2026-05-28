@@ -208,7 +208,7 @@ impl<'ctx> CodeGenerator<'ctx> {
 
         let elem_kind = self.value_kind_from_semantic(&elem_sem)?;
 
-        // load length from source
+        // load source length and data pointer
         let len_slot = self
             .builder
             .build_struct_gep(self.vector_struct, src_ptr, 0, "src_len_slot")
@@ -218,6 +218,20 @@ impl<'ctx> CodeGenerator<'ctx> {
             .build_load(self.context.i64_type(), len_slot, "src_len")
             .map_err(|e| e.to_string())?
             .into_int_value();
+
+        let src_data_slot = self
+            .builder
+            .build_struct_gep(self.vector_struct, src_ptr, 1, "src_data_slot")
+            .map_err(|e| e.to_string())?;
+        let src_data_i8 = self
+            .builder
+            .build_load(
+                self.context.i8_type().ptr_type(AddressSpace::default()),
+                src_data_slot,
+                "src_data_ptr",
+            )
+            .map_err(|e| e.to_string())?
+            .into_pointer_value();
 
         // allocate dest vector struct
         let struct_size = self
@@ -362,7 +376,7 @@ impl<'ctx> CodeGenerator<'ctx> {
         let base_i8 = self
             .builder
             .build_pointer_cast(
-                data_typed,
+                src_data_i8,
                 self.context.i8_type().ptr_type(AddressSpace::default()),
                 "src_data_i8",
             )
@@ -525,6 +539,59 @@ impl<'ctx> CodeGenerator<'ctx> {
             _ => return Err("Indice debe ser Number".to_string()),
         };
 
+        let zero = self.context.i64_type().const_int(0, false);
+        let in_range = self
+            .builder
+            .build_int_compare(inkwell::IntPredicate::SGE, idx_i64, zero, "idx_non_negative")
+            .map_err(|e| e.to_string())?;
+
+        let len_slot = self
+            .builder
+            .build_struct_gep(self.vector_struct, vec_ptr, 0, "vec_len_slot")
+            .map_err(|e| e.to_string())?;
+        let len_val = self
+            .builder
+            .build_load(self.context.i64_type(), len_slot, "vec_len")
+            .map_err(|e| e.to_string())?
+            .into_int_value();
+
+        let lt_len = self
+            .builder
+            .build_int_compare(inkwell::IntPredicate::ULT, idx_i64, len_val, "idx_lt_len")
+            .map_err(|e| e.to_string())?;
+
+        let valid = self
+            .builder
+            .build_and(in_range, lt_len, "idx_valid")
+            .map_err(|e| e.to_string())?;
+
+        let function = self
+            .builder
+            .get_insert_block()
+            .and_then(|block| block.get_parent())
+            .ok_or_else(|| "No se pudo determinar la funcion actual para index".to_string())?;
+        let ok_block = self.context.append_basic_block(function, "index_ok");
+        let fail_block = self.context.append_basic_block(function, "index_fail");
+        let cont_block = self.context.append_basic_block(function, "index_cont");
+
+        self.builder
+            .build_conditional_branch(valid, ok_block, fail_block)
+            .map_err(|e| e.to_string())?;
+
+        self.builder.position_at_end(fail_block);
+        let panic_fn = self.get_panic_function();
+        let msg_name = self.fresh_tmp("index_panic_msg");
+        let msg = self
+            .builder
+            .build_global_string_ptr("Runtime error: index out of bounds", &msg_name)
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_call(panic_fn, &[msg.as_pointer_value().into()], "index_panic")
+            .map_err(|e| e.to_string())?;
+        self.builder.build_unreachable().map_err(|e| e.to_string())?;
+
+        self.builder.position_at_end(ok_block);
+
         // element size
         let elem_basic = self.basic_type_for_semantic(&elem_sem)?;
         let elem_size = elem_basic
@@ -565,21 +632,20 @@ impl<'ctx> CodeGenerator<'ctx> {
             .build_pointer_cast(elem_i8_ptr, elem_ptr_type, "elem_ptr")
             .map_err(|e| e.to_string())?;
 
-        // load value
-        match elem_kind {
-            ValueKind::Number => Ok(CodegenValue::Number(
+        let loaded = match elem_kind {
+            ValueKind::Number => CodegenValue::Number(
                 self.builder
                     .build_load(self.f64_type, elem_ptr, "load_elem")
                     .map_err(|e| e.to_string())?
                     .into_float_value(),
-            )),
-            ValueKind::Bool => Ok(CodegenValue::Bool(
+            ),
+            ValueKind::Bool => CodegenValue::Bool(
                 self.builder
                     .build_load(self.bool_type, elem_ptr, "load_elem")
                     .map_err(|e| e.to_string())?
                     .into_int_value(),
-            )),
-            ValueKind::String => Ok(CodegenValue::String(
+            ),
+            ValueKind::String => CodegenValue::String(
                 self.builder
                     .build_load(
                         self.context.i8_type().ptr_type(AddressSpace::default()),
@@ -588,8 +654,8 @@ impl<'ctx> CodeGenerator<'ctx> {
                     )
                     .map_err(|e| e.to_string())?
                     .into_pointer_value(),
-            )),
-            ValueKind::Object => Ok(CodegenValue::Object(
+            ),
+            ValueKind::Object => CodegenValue::Object(
                 self.builder
                     .build_load(
                         self.context.i8_type().ptr_type(AddressSpace::default()),
@@ -598,8 +664,8 @@ impl<'ctx> CodeGenerator<'ctx> {
                     )
                     .map_err(|e| e.to_string())?
                     .into_pointer_value(),
-            )),
-            ValueKind::Vector => Ok(CodegenValue::Vector(
+            ),
+            ValueKind::Vector => CodegenValue::Vector(
                 self.builder
                     .build_load(
                         self.vector_struct.ptr_type(AddressSpace::default()),
@@ -608,7 +674,15 @@ impl<'ctx> CodeGenerator<'ctx> {
                     )
                     .map_err(|e| e.to_string())?
                     .into_pointer_value(),
-            )),
-        }
+            ),
+        };
+
+        self.builder
+            .build_unconditional_branch(cont_block)
+            .map_err(|e| e.to_string())?;
+
+        self.builder.position_at_end(cont_block);
+
+        Ok(loaded)
     }
 }

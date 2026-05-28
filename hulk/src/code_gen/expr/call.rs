@@ -1,5 +1,7 @@
 use inkwell::values::{FloatValue, FunctionValue, PointerValue};
 use inkwell::AddressSpace;
+use inkwell::IntPredicate;
+use inkwell::types::BasicType;
 
 use crate::ast::{BaseCallExpr, CallExpr, KindExpr};
 use crate::semantic::SemanticAnalysis;
@@ -315,26 +317,29 @@ impl<'ctx> CodeGenerator<'ctx> {
 
         let argument = &call.arguments[0];
         let value = self.lower_expr(argument, analysis)?;
+        let semantic_type = analysis
+            .inferred_types
+            .get(&argument.id)
+            .ok_or_else(|| "No se encontro el tipo inferido para print".to_string())?;
         let printf_fn = self.get_printf_function();
+        let string_value = self.value_to_string(value, semantic_type, analysis)?;
+
+        self.print_string(printf_fn, string_value)?;
 
         match value {
             CodegenValue::Number(num) => {
-                self.print_number(printf_fn, num)?;
                 Ok(CodegenValue::Number(num))
             }
             CodegenValue::String(str_val) => {
-                self.print_string(printf_fn, str_val)?;
                 Ok(CodegenValue::String(str_val))
             }
             CodegenValue::Bool(bool_val) => {
-                self.print_bool(printf_fn, bool_val)?;
                 Ok(CodegenValue::Bool(bool_val))
             }
             CodegenValue::Object(object_val) => {
-                self.print_object(argument, analysis, printf_fn, object_val)?;
                 Ok(CodegenValue::Object(object_val))
             }
-            CodegenValue::Vector(_) => Err("Print no soporta vectores todavia".to_string()),
+            CodegenValue::Vector(vector_val) => Ok(CodegenValue::Vector(vector_val)),
         }
     }
 
@@ -383,58 +388,340 @@ impl<'ctx> CodeGenerator<'ctx> {
         Ok(())
     }
 
-    fn print_object(
+    fn value_to_string(
         &mut self,
-        argument: &crate::ast::Expr,
+        value: CodegenValue<'ctx>,
+        semantic_type: &SemanticType,
         analysis: &SemanticAnalysis,
-        printf_fn: FunctionValue<'ctx>,
-        object_value: PointerValue<'ctx>,
-    ) -> Result<(), String> {
-        if let Some(SemanticType::Custom(type_name)) = analysis.inferred_types.get(&argument.id) {
-            if let Ok(owner_type) = self.object_method_owner(type_name, "toString", analysis) {
-                let symbol = self.method_symbol_name(&owner_type, "toString");
-                let Some(info) = self.get_function(&symbol).cloned() else {
-                    return Err(format!("Metodo no encontrado: {}.toString", owner_type));
-                };
-
-                if info.params.len() != 1 || info.ret != super::super::ValueKind::String {
-                    return Err(format!(
-                        "toString de {} debe tener firma toString(): String",
-                        owner_type
-                    ));
-                }
-
+    ) -> Result<PointerValue<'ctx>, String> {
+        match (semantic_type, value) {
+            (SemanticType::Number, CodegenValue::Number(number)) => {
+                let fmt_fn = self.get_format_number_function();
                 let call = self
                     .builder
-                    .build_call(info.function, &[object_value.into()], "call_toString")
+                    .build_call(fmt_fn, &[number.into()], "format_num")
                     .map_err(|e| e.to_string())?;
-                let string_value = call
-                    .try_as_basic_value()
-                    .left()
-                    .ok_or_else(|| "toString no devolvio un valor".to_string())?
-                    .into_pointer_value();
 
-                self.print_string(printf_fn, string_value)?;
-                return Ok(());
+                let value = call.try_as_basic_value()
+                    .left()
+                    .ok_or_else(|| "format_number no devolvio un valor".to_string())?
+                    .into_pointer_value();
+                Ok(value)
+            }
+            (SemanticType::Boolean, CodegenValue::Bool(boolean)) => {
+                let false_value = self.bool_type.const_zero();
+                let is_false = self
+                    .builder
+                    .build_int_compare(IntPredicate::EQ, boolean, false_value, "bool_is_false")
+                    .map_err(|e| e.to_string())?;
+                let true_name = self.fresh_tmp("bool_true");
+                let true_ptr = self
+                    .builder
+                    .build_global_string_ptr("true", &true_name)
+                    .map_err(|e| e.to_string())?
+                    .as_pointer_value();
+                let false_name = self.fresh_tmp("bool_false");
+                let false_ptr = self
+                    .builder
+                    .build_global_string_ptr("false", &false_name)
+                    .map_err(|e| e.to_string())?
+                    .as_pointer_value();
+                let selected = self
+                    .builder
+                    .build_select(is_false, false_ptr, true_ptr, "bool_str")
+                    .map_err(|e| e.to_string())?
+                    .into_pointer_value();
+                Ok(selected)
+            }
+            (SemanticType::String, CodegenValue::String(string_value)) => Ok(string_value),
+            (SemanticType::Custom(type_name), CodegenValue::Object(object_value)) => {
+                self.object_to_string(type_name, object_value, analysis)
+            }
+            (SemanticType::Vector(inner), CodegenValue::Vector(vector_value)) => {
+                self.vector_to_string(vector_value, inner, analysis)
+            }
+            (expected, actual) => Err(format!(
+                "No se pudo convertir a string: se esperaba {} y se obtuvo {:?}",
+                expected, actual.kind()
+            )),
+        }
+    }
+
+    fn object_to_string(
+        &mut self,
+        type_name: &str,
+        object_value: PointerValue<'ctx>,
+        analysis: &SemanticAnalysis,
+    ) -> Result<PointerValue<'ctx>, String> {
+        if let Ok(owner_type) = self.object_method_owner(type_name, "toString", analysis) {
+            let symbol = self.method_symbol_name(&owner_type, "toString");
+            let Some(info) = self.get_function(&symbol).cloned() else {
+                return Err(format!("Metodo no encontrado: {}.toString", owner_type));
+            };
+
+            if info.params.len() != 1 || info.ret != super::super::ValueKind::String {
+                return Err(format!(
+                    "toString de {} debe tener firma toString(): String",
+                    owner_type
+                ));
             }
 
-            let fallback = format!("<{}>", type_name);
-            let fallback_ptr = self
+            let call = self
                 .builder
-                .build_global_string_ptr(&fallback, "print_fmt_obj")
-                .map_err(|e| e.to_string())?
-                .as_pointer_value();
-            self.print_string(printf_fn, fallback_ptr)?;
-            return Ok(());
+                .build_call(info.function, &[object_value.into()], "call_toString")
+                .map_err(|e| e.to_string())?;
+            let string_value = call
+                .try_as_basic_value()
+                .left()
+                .ok_or_else(|| "toString no devolvio un valor".to_string())?
+                .into_pointer_value();
+
+            return Ok(string_value);
         }
 
+        let fallback = format!("<{}>", type_name);
+        let fallback_name = self.fresh_tmp("obj_str");
         let fallback_ptr = self
             .builder
-            .build_global_string_ptr("<object>", "print_fmt_obj_fallback")
+            .build_global_string_ptr(&fallback, &fallback_name)
             .map_err(|e| e.to_string())?
             .as_pointer_value();
-        self.print_string(printf_fn, fallback_ptr)?;
-        Ok(())
+        Ok(fallback_ptr)
+    }
+
+    fn vector_to_string(
+        &mut self,
+        vector_value: PointerValue<'ctx>,
+        inner: &SemanticType,
+        analysis: &SemanticAnalysis,
+    ) -> Result<PointerValue<'ctx>, String> {
+        let len_slot = self
+            .builder
+            .build_struct_gep(self.vector_struct, vector_value, 0, "vec_str_len_slot")
+            .map_err(|e| e.to_string())?;
+        let len_val = self
+            .builder
+            .build_load(self.context.i64_type(), len_slot, "vec_str_len")
+            .map_err(|e| e.to_string())?
+            .into_int_value();
+
+        let data_slot = self
+            .builder
+            .build_struct_gep(self.vector_struct, vector_value, 1, "vec_str_data_slot")
+            .map_err(|e| e.to_string())?;
+        let data_ptr = self
+            .builder
+            .build_load(
+                self.context.i8_type().ptr_type(AddressSpace::default()),
+                data_slot,
+                "vec_str_data",
+            )
+            .map_err(|e| e.to_string())?
+            .into_pointer_value();
+
+        let elem_kind = self.value_kind_from_semantic(inner)?;
+        let elem_basic = self.basic_type_for_semantic(inner)?;
+        let elem_size = elem_basic
+            .size_of()
+            .ok_or_else(|| "No se pudo calcular tamano del elemento".to_string())?;
+        let elem_size_i64 = self
+            .builder
+            .build_int_cast(elem_size, self.context.i64_type(), "vec_str_elem_size")
+            .map_err(|e| e.to_string())?;
+
+        let open_name = self.fresh_tmp("vec_open");
+        let open_ptr = self
+            .builder
+            .build_global_string_ptr("[", &open_name)
+            .map_err(|e| e.to_string())?
+            .as_pointer_value();
+        let close_name = self.fresh_tmp("vec_close");
+        let close_ptr = self
+            .builder
+            .build_global_string_ptr("]", &close_name)
+            .map_err(|e| e.to_string())?
+            .as_pointer_value();
+        let sep_name = self.fresh_tmp("vec_sep");
+        let sep_ptr = self
+            .builder
+            .build_global_string_ptr(", ", &sep_name)
+            .map_err(|e| e.to_string())?
+            .as_pointer_value();
+
+        let result_slot = self.alloca_for_kind(&super::super::ValueKind::String, "vec_render")?;
+        self.store_value(result_slot, CodegenValue::String(open_ptr))?;
+
+        let function = self
+            .builder
+            .get_insert_block()
+            .and_then(|block| block.get_parent())
+            .ok_or_else(|| "No se pudo determinar la funcion actual para print(vector)".to_string())?;
+        let loop_cond = self.context.append_basic_block(function, "vec_render_cond");
+        let loop_body = self.context.append_basic_block(function, "vec_render_body");
+        let loop_after = self.context.append_basic_block(function, "vec_render_after");
+
+        let idx_slot = self
+            .builder
+            .build_alloca(self.context.i64_type(), "vec_render_idx")
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_store(idx_slot, self.context.i64_type().const_int(0, false))
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_unconditional_branch(loop_cond)
+            .map_err(|e| e.to_string())?;
+
+        self.builder.position_at_end(loop_cond);
+        let idx_val = self
+            .builder
+            .build_load(self.context.i64_type(), idx_slot, "vec_render_idx_val")
+            .map_err(|e| e.to_string())?
+            .into_int_value();
+        let continue_loop = self
+            .builder
+            .build_int_compare(IntPredicate::ULT, idx_val, len_val, "vec_render_cmp")
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_conditional_branch(continue_loop, loop_body, loop_after)
+            .map_err(|e| e.to_string())?;
+
+        self.builder.position_at_end(loop_body);
+        let byte_offset = self
+            .builder
+            .build_int_mul(idx_val, elem_size_i64, "vec_render_byte_offset")
+            .map_err(|e| e.to_string())?;
+        let data_i8 = self
+            .builder
+            .build_pointer_cast(
+                data_ptr,
+                self.context.i8_type().ptr_type(AddressSpace::default()),
+                "vec_render_data_i8",
+            )
+            .map_err(|e| e.to_string())?;
+        let elem_i8 = unsafe {
+            self.builder
+                .build_in_bounds_gep(
+                    self.context.i8_type(),
+                    data_i8,
+                    &[byte_offset],
+                    "vec_render_elem_i8",
+                )
+                .map_err(|e| e.to_string())?
+        };
+        let elem_ptr = self
+            .builder
+            .build_pointer_cast(elem_i8, elem_basic.ptr_type(AddressSpace::default()), "vec_render_elem_ptr")
+            .map_err(|e| e.to_string())?;
+
+        let element_value = match elem_kind {
+            super::super::ValueKind::Number => CodegenValue::Number(
+                self.builder
+                    .build_load(self.f64_type, elem_ptr, "vec_render_elem_num")
+                    .map_err(|e| e.to_string())?
+                    .into_float_value(),
+            ),
+            super::super::ValueKind::Bool => CodegenValue::Bool(
+                self.builder
+                    .build_load(self.bool_type, elem_ptr, "vec_render_elem_bool")
+                    .map_err(|e| e.to_string())?
+                    .into_int_value(),
+            ),
+            super::super::ValueKind::String => CodegenValue::String(
+                self.builder
+                    .build_load(
+                        self.context.i8_type().ptr_type(AddressSpace::default()),
+                        elem_ptr,
+                        "vec_render_elem_str",
+                    )
+                    .map_err(|e| e.to_string())?
+                    .into_pointer_value(),
+            ),
+            super::super::ValueKind::Object => CodegenValue::Object(
+                self.builder
+                    .build_load(
+                        self.context.i8_type().ptr_type(AddressSpace::default()),
+                        elem_ptr,
+                        "vec_render_elem_obj",
+                    )
+                    .map_err(|e| e.to_string())?
+                    .into_pointer_value(),
+            ),
+            super::super::ValueKind::Vector => CodegenValue::Vector(
+                self.builder
+                    .build_load(
+                        self.vector_struct.ptr_type(AddressSpace::default()),
+                        elem_ptr,
+                        "vec_render_elem_vec",
+                    )
+                    .map_err(|e| e.to_string())?
+                    .into_pointer_value(),
+            ),
+        };
+
+        let element_string = self.value_to_string(element_value, inner, analysis)?;
+
+        let separator_needed = self
+            .builder
+            .build_int_compare(IntPredicate::NE, idx_val, self.context.i64_type().const_int(0, false), "vec_render_need_sep")
+            .map_err(|e| e.to_string())?;
+        let sep_block = self.context.append_basic_block(function, "vec_render_sep");
+        let append_block = self.context.append_basic_block(function, "vec_render_append");
+        self.builder
+            .build_conditional_branch(separator_needed, sep_block, append_block)
+            .map_err(|e| e.to_string())?;
+
+        self.builder.position_at_end(sep_block);
+        let current = self
+            .load_value(&super::super::ValueKind::String, result_slot, "vec_render_current")?
+            .into_string()?;
+        let with_sep = self.concat_strings(current, sep_ptr)?;
+        self.store_value(result_slot, CodegenValue::String(with_sep))?;
+        self.builder
+            .build_unconditional_branch(append_block)
+            .map_err(|e| e.to_string())?;
+
+        self.builder.position_at_end(append_block);
+        let current = self
+            .load_value(&super::super::ValueKind::String, result_slot, "vec_render_current2")?
+            .into_string()?;
+        let appended = self.concat_strings(current, element_string)?;
+        self.store_value(result_slot, CodegenValue::String(appended))?;
+
+        let next_idx = self
+            .builder
+            .build_int_add(idx_val, self.context.i64_type().const_int(1, false), "vec_render_next")
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_store(idx_slot, next_idx)
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_unconditional_branch(loop_cond)
+            .map_err(|e| e.to_string())?;
+
+        self.builder.position_at_end(loop_after);
+        let current = self
+            .load_value(&super::super::ValueKind::String, result_slot, "vec_render_done")?
+            .into_string()?;
+        let closed = self.concat_strings(current, close_ptr)?;
+        Ok(closed)
+    }
+
+    fn concat_strings(
+        &self,
+        left: PointerValue<'ctx>,
+        right: PointerValue<'ctx>,
+    ) -> Result<PointerValue<'ctx>, String> {
+        let concat_fn = self.get_concat_function();
+        let call = self
+            .builder
+            .build_call(concat_fn, &[left.into(), right.into()], "concat")
+            .map_err(|e| e.to_string())?;
+
+        let result = call.try_as_basic_value()
+            .left()
+            .ok_or_else(|| "concat no devolvio un valor".to_string())?
+            .into_pointer_value();
+        Ok(result)
     }
 
     fn get_unary_intrinsic(&self, name: &str) -> FunctionValue<'ctx> {

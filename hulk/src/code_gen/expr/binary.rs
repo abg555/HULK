@@ -271,7 +271,7 @@ impl<'ctx> CodeGenerator<'ctx> {
         self.module.add_function("sprintf", fn_type, None)
     }
 
-    fn get_concat_function(&self) -> inkwell::values::FunctionValue<'ctx> {
+    pub(super) fn get_concat_function(&self) -> inkwell::values::FunctionValue<'ctx> {
         if let Some(function) = self.module.get_function("hulk_concat") {
             return function;
         }
@@ -281,7 +281,7 @@ impl<'ctx> CodeGenerator<'ctx> {
         self.module.add_function("hulk_concat", fn_type, None)
     }
 
-    fn get_concat_full_function(&self) -> inkwell::values::FunctionValue<'ctx> {
+    pub(super) fn get_concat_full_function(&self) -> inkwell::values::FunctionValue<'ctx> {
         if let Some(function) = self.module.get_function("hulk_concat_full") {
             return function;
         }
@@ -291,7 +291,7 @@ impl<'ctx> CodeGenerator<'ctx> {
         self.module.add_function("hulk_concat_full", fn_type, None)
     }
 
-    fn get_format_number_function(&self) -> inkwell::values::FunctionValue<'ctx> {
+    pub(super) fn get_format_number_function(&self) -> inkwell::values::FunctionValue<'ctx> {
         if let Some(function) = self.module.get_function("hulk_format_number") {
             return function;
         }

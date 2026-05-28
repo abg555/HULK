@@ -164,7 +164,7 @@ impl<'ctx> CodeGenerator<'ctx> {
         }
     }
 
-    fn get_panic_function(&self) -> inkwell::values::FunctionValue<'ctx> {
+    pub(super) fn get_panic_function(&self) -> inkwell::values::FunctionValue<'ctx> {
         if let Some(function) = self.module.get_function("hulk_panic") {
             return function;
         }
@@ -188,11 +188,17 @@ impl<'ctx> CodeGenerator<'ctx> {
             .cloned()
             .ok_or_else(|| format!("Tipo no definido: {}", new_expr.type_name))?;
 
-        if decl.param.len() != new_expr.arguments.len() {
+        let expected_ctor_len = analysis
+            .type_shapes
+            .get(&new_expr.type_name)
+            .map(|s| s.ctor_params.len())
+            .unwrap_or(decl.param.len());
+
+        if expected_ctor_len != new_expr.arguments.len() {
             return Err(format!(
                 "Aridad invalida al construir {}: se esperaban {} argumentos y llegaron {}",
                 new_expr.type_name,
-                decl.param.len(),
+                expected_ctor_len,
                 new_expr.arguments.len()
             ));
         }
@@ -308,11 +314,17 @@ impl<'ctx> CodeGenerator<'ctx> {
             .cloned()
             .ok_or_else(|| format!("Tipo no definido: {}", type_name))?;
 
-        if decl.param.len() != arg_exprs.len() {
+        let expected_ctor_len = analysis
+            .type_shapes
+            .get(type_name)
+            .map(|s| s.ctor_params.len())
+            .unwrap_or(decl.param.len());
+
+        if expected_ctor_len != arg_exprs.len() {
             return Err(format!(
                 "Aridad invalida al construir {}: se esperaban {} argumentos y llegaron {}",
                 type_name,
-                decl.param.len(),
+                expected_ctor_len,
                 arg_exprs.len()
             ));
         }
@@ -335,11 +347,48 @@ impl<'ctx> CodeGenerator<'ctx> {
                 return Err(format!("El padre de {} debe ser un tipo nombrado", type_name));
             };
 
-            let parent_args = decl.parent_arg.as_deref().unwrap_or(&[]);
+            // Determine parent args to pass:
+            // - If the type declaration supplies explicit parent_arg expressions, use them.
+            // - Else if the child type has no explicit ctor params (implicit inheritance),
+            //   forward the current `arg_exprs` (or the prefix matching parent's arity).
+            // - Otherwise, pass an empty list.
+            let parent_args_vec: Vec<crate::ast::Expr> = if let Some(parent_arg) = &decl.parent_arg {
+                if !parent_arg.is_empty() {
+                    parent_arg.clone()
+                } else if decl.param.is_empty() {
+                    // child has no explicit params -> implicit inheritance: forward the args
+                    let parent_arity = analysis
+                        .type_shapes
+                        .get(&parent_name)
+                        .map(|s| s.ctor_params.len())
+                        .unwrap_or(0);
+                    if parent_arity == 0 {
+                        Vec::new()
+                    } else if arg_exprs.len() >= parent_arity {
+                        arg_exprs[..parent_arity].to_vec()
+                    } else {
+                        return Err(format!(
+                            "Aridad invalida al construir {}: se esperaban {} argumentos para el padre {} pero llegaron {}",
+                            type_name,
+                            parent_arity,
+                            parent_name,
+                            arg_exprs.len()
+                        ));
+                    }
+                } else {
+                    Vec::new()
+                }
+            } else if decl.param.is_empty() {
+                // No explicit parent_arg and no child params -> forward all args
+                arg_exprs.to_vec()
+            } else {
+                Vec::new()
+            };
+
             self.initialize_object_fields(
                 concrete_type,
                 &parent_name,
-                parent_args,
+                &parent_args_vec,
                 analysis,
                 object_struct,
                 typed_ptr,
