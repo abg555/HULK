@@ -5,7 +5,10 @@ use hulk::types::SemanticType;
 fn doc_print_hello_world() {
     let input = r#"print("Hello World");"#;
     let result = analyze_program(input);
-    assert!(result.is_ok(), "expected no semantic errors, got: {result:?}");
+    assert!(
+        result.is_ok(),
+        "expected no semantic errors, got: {result:?}"
+    );
 }
 
 #[test]
@@ -99,13 +102,20 @@ function operate(x, y) {
 "#;
 
     let ctx = analyze_program(src).expect("expected semantic success");
-    let sym = ctx.global_symbols.get("operate").expect("operate symbol defined");
+    let sym = ctx
+        .global_symbols
+        .get("operate")
+        .expect("operate symbol defined");
     match &sym.typ {
         SemanticType::Function(params, ret) => {
             assert_eq!(params.len(), 2);
             assert_eq!(params[0], SemanticType::Number);
             assert_eq!(params[1], SemanticType::Number);
-            assert_eq!(**ret, SemanticType::Number, "expected return type Number for operate");
+            assert_eq!(
+                **ret,
+                SemanticType::Number,
+                "expected return type Number for operate"
+            );
         }
         other => panic!("expected operate to be a function, got {:?}", other),
     }
