@@ -1,0 +1,137 @@
+// example: arithmetic_pow
+// expect: @llvm.pow.f64
+// expect: fadd double
+// expect: fmul double
+// expect: fdiv double
+function math(x: Number, y: Number): Number => (x + y) * 2 ^ 3 / 5;
+math(1, 2)
+
+// example: string_concat
+// expect: @hulk_format_number
+// expect: @hulk_concat_full
+// expect: @printf
+print("total: " @ 42 @@ "!")
+
+// example: if_elif_chain
+// expect: if_then
+// expect: if_else
+// expect: if_merge
+// expect: phi double
+function classify(x: Number): Number =>
+    if (x < 0) -1
+    elif (x == 0) 0
+    else 1;
+
+classify(2)
+
+// example: while_expression
+// expect: while_cond
+// expect: while_body
+// expect: while_after
+// expect: phi double
+let a = 3 in while (a >= 0) {
+    a := a - 1;
+    a
+}
+
+// example: for_range
+// expect: for_cond
+// expect: for_body
+// expect: for_after
+// expect: phi double
+for (x in range(0, 3)) x + 1
+
+// example: inherited_objects
+// expect: obj.Point
+// expect: obj.PolarPoint
+// expect: malloc
+// expect: Point.getX
+// expect: PolarPoint.radius
+// expect: @llvm.sqrt.f64
+type Point {
+    x: Number = 0;
+    y: Number = 0;
+
+    getX(): Number => self.x;
+    getY(): Number => self.y;
+}
+
+type PolarPoint inherits Point {
+    radius(): Number => sqrt(self.getX() ^ 2 + self.getY() ^ 2);
+}
+
+let p = new PolarPoint() in p.radius()
+
+// example: self_field_assignment
+// expect: obj.Counter
+// expect: Counter.increment
+// expect: value_field
+type Counter {
+    value: Number = 0;
+
+    increment(): Number => self.value := self.value + 1;
+    current(): Number => self.value;
+}
+
+let c = new Counter() in c.increment()
+
+// example: user_defined_tan
+// expect: define double @tan
+// expect: call double @tan
+function tan(x: Number): Number => x + 1;
+function use_tan(x: Number): Number => tan(x);
+use_tan(2)
+
+// example: missing_global_expr
+// expect-error: No hay expresion global para compilar
+function add(a: Number, b: Number): Number => a + b;
+
+// example: print_object_toString
+// expect: Box.toString
+// expect: @printf
+type Box {
+    value: Number = 0;
+
+    toString(): String => "Box value";
+}
+
+print(new Box())
+
+// example: print_object_fallback
+// expect: <Point>
+// expect: @printf
+type Point {
+    x: Number = 0;
+}
+
+print(new Point())
+
+// example: vtable_dispatch
+// expect: @vtable.Animal
+// expect: @vtable.Dog
+// expect: method_load
+type Animal {
+    speak(): String => "...";
+}
+
+type Dog inherits Animal {
+    speak(): String => "woof";
+}
+
+let a: Animal = new Dog() in a.speak()
+
+// example: is_as_rtti
+// expect: is_cmp
+// expect: as_cmp
+type Base {
+    value: Number = 0;
+}
+
+type Child inherits Base {
+    child_value: Number = 1;
+}
+
+let x: Base = new Child() in {
+    x is Child;
+    x as Child;
+}

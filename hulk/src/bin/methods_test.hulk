@@ -1,0 +1,7 @@
+type Counter {
+  value: Number = 0;
+
+  increment() => 1;
+}
+
+let c = new Counter() in c.increment()
