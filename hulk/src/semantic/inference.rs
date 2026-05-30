@@ -293,8 +293,12 @@ impl SemanticAnalyzer {
                         .lookup_member_type(&type_name, &member.field)
                         .unwrap_or(SemanticType::Unknown),
                     SemanticType::Vector(inner) => match member.field.as_str() {
-                        "size" => SemanticType::Function(Vec::new(), Box::new(SemanticType::Number)),
-                        "next" => SemanticType::Function(Vec::new(), Box::new(SemanticType::Boolean)),
+                        "size" => {
+                            SemanticType::Function(Vec::new(), Box::new(SemanticType::Number))
+                        }
+                        "next" => {
+                            SemanticType::Function(Vec::new(), Box::new(SemanticType::Boolean))
+                        }
                         "current" => SemanticType::Function(Vec::new(), Box::new(*inner)),
                         _ => SemanticType::Unknown,
                     },
