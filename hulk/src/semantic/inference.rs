@@ -269,17 +269,57 @@ impl SemanticAnalyzer {
         }
     }
 
-    /// Infer return type using a parameter-type context (useful when params were
-    /// previously inferred and are not yet installed globally). This allows
-    /// propagating the type of expressions like `print(x)` into the function
-    /// return when `x` is a parameter with a known inferred type.
-    pub(super) fn infer_return_type_with_context(
-        &self,
-        body: &Expr,
-        _span: Span,
-        param_types: &std::collections::HashMap<String, SemanticType>,
-    ) -> SemanticType {
-        let return_exprs = self.collect_return_expressions(body);
+    /// Inferencia sintactica ligera usada antes del chequeo completo.
+    fn infer_expr_type_hint(&self, expr: &Expr) -> SemanticType {
+        match &expr.kind {
+            KindExpr::Literal(lit) => match lit.value {
+                LiteralValue::Number(_) => SemanticType::Number,
+                LiteralValue::String(_) => SemanticType::String,
+                LiteralValue::Bool(_) => SemanticType::Boolean,
+            },
+            KindExpr::Variable(var) => {
+                if var.name == "self" {
+                    self.current_type_context
+                        .as_ref()
+                        .map(|name| SemanticType::Custom(name.clone()))
+                        .unwrap_or(SemanticType::Unknown)
+                } else {
+                    self.symbols
+                        .lookup(&var.name)
+                        .map(|sym| sym.typ.clone())
+                        .unwrap_or(SemanticType::Unknown)
+                }
+            }
+            KindExpr::MemberAccess(member) => {
+                let object_ty = self.infer_expr_type_hint(&member.object);
+                match object_ty {
+                    SemanticType::Custom(type_name) => self
+                        .lookup_member_type(&type_name, &member.field)
+                        .unwrap_or(SemanticType::Unknown),
+                    SemanticType::Vector(inner) => match member.field.as_str() {
+                        "size" => {
+                            SemanticType::Function(Vec::new(), Box::new(SemanticType::Number))
+                        }
+                        "next" => {
+                            SemanticType::Function(Vec::new(), Box::new(SemanticType::Boolean))
+                        }
+                        "current" => SemanticType::Function(Vec::new(), Box::new(*inner)),
+                        _ => SemanticType::Unknown,
+                    },
+                    SemanticType::Function(_, _) if member.field == "invoke" => object_ty,
+                    _ => SemanticType::Unknown,
+                }
+            }
+            KindExpr::Call(call) => {
+                if let KindExpr::Variable(var) = &call.callee.kind
+                    && var.name == "print"
+                {
+                    return call
+                        .arguments
+                        .first()
+                        .map(|arg| self.infer_expr_type_hint(arg))
+                        .unwrap_or(SemanticType::Unknown);
+                }
 
         if return_exprs.is_empty() {
             return SemanticType::Unknown;

@@ -1554,6 +1554,62 @@ type PolarPoint2(phi: Number, rho: Number) inherits Point(rho * sin(phi), rho * 
 }
 
 #[test]
+fn implicit_child_constructor_inherits_parent_arguments_from_docs() {
+    let input = r#"
+type Point(x: Number, y: Number) {
+    x: Number = x;
+    y: Number = y;
+
+    getX(): Number => self.x;
+    getY(): Number => self.y;
+}
+
+type PolarPoint inherits Point {
+    rho(): Number => sqrt(self.getX() ^ 2 + self.getY() ^ 2);
+}
+
+let pt = new PolarPoint(3, 4) in pt.rho()
+"#;
+
+    let analysis =
+        analyze_program(input).expect("expected PolarPoint to inherit Point constructor args");
+    let polar_point = analysis
+        .type_shapes
+        .get("PolarPoint")
+        .expect("PolarPoint shape should be present");
+
+    assert_eq!(
+        polar_point.ctor_params,
+        vec![SemanticType::Number, SemanticType::Number]
+    );
+}
+
+#[test]
+fn child_constructor_params_are_forwarded_to_parent_when_parent_args_are_omitted() {
+    let input = r#"
+type Point(x: Number, y: Number) {
+    x: Number = x;
+    y: Number = y;
+
+    getX(): Number => self.x;
+    getY(): Number => self.y;
+}
+
+type PolarPoint(ax: Number, ay: Number) inherits Point {
+    rho(): Number => sqrt(self.getX() ^ 2 + self.getY() ^ 2);
+}
+
+let pt = new PolarPoint(3, 4) in pt.rho()
+"#;
+
+    let result = analyze_program(input);
+    assert!(
+        result.is_ok(),
+        "expected child constructor args to be forwarded to Point, got: {result:?}"
+    );
+}
+
+#[test]
 fn infers_number_type_from_attribute_initializers() {
     let input = r#"
         type Point {
@@ -1588,7 +1644,7 @@ fn accepts_corrected_polar_point_implementation() {
         }
 
         type PolarPoint(ax: Number, ay: Number)
-            inherits Point(ax, ay)
+            inherits Point
         {
             rho(): Number =>
                 sqrt(self.getX() ^ 2 + self.getY() ^ 2);
