@@ -1,4 +1,5 @@
 pub mod ast;
+pub mod code_gen;
 pub mod diagnostics;
 pub mod lexer;
 pub mod node_ids;
