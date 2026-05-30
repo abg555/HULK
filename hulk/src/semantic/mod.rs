@@ -28,6 +28,7 @@ struct ParentLink {
 #[derive(Clone, Debug)]
 pub struct TypeShape {
     pub ctor_params: Vec<SemanticType>,
+    pub ctor_param_names: Vec<String>,
     pub fields: HashMap<String, SemanticType>,
     pub methods: HashMap<String, SemanticType>,
     pub parent: Option<String>,
@@ -364,6 +365,7 @@ impl SemanticAnalyzer {
             .iter()
             .map(|p| self.resolve_type_ref_silent(p.types.as_ref()))
             .collect::<Vec<_>>();
+        let ctor_param_names = typ.param.iter().map(|p| p.name.clone()).collect::<Vec<_>>();
 
         let mut fields = HashMap::new();
         for field in &typ.fields {
@@ -400,6 +402,7 @@ impl SemanticAnalyzer {
 
         TypeShape {
             ctor_params,
+            ctor_param_names,
             fields,
             methods,
             parent,
@@ -554,7 +557,7 @@ impl SemanticAnalyzer {
             }
         }
 
-        let mut implicit_ctor_params = None;
+        let mut implicit_ctor = None;
         let mut implicit_parent_info_for_validation = None;
         let mut parent_info_for_validation = None;
         if let Some(parent) = &typ.parent {
@@ -564,10 +567,23 @@ impl SemanticAnalyzer {
                 if let Some(parent_shape) = self.type_shapes.get(&parent_name).cloned() {
                     let has_explicit_parent_args =
                         typ.parent_arg.as_ref().is_some_and(|args| !args.is_empty());
+                    let explicitly_forwards_parent_args = typ.param.is_empty()
+                        && typ.parent_arg.as_ref().is_some_and(|args| {
+                            self.parent_args_forward_parent_params(&parent_shape, args)
+                        });
                     // Implicit constructor parameter inheritance
-                    if !has_explicit_parent_args && !parent_shape.ctor_params.is_empty() {
+                    if (!has_explicit_parent_args || explicitly_forwards_parent_args)
+                        && !parent_shape.ctor_params.is_empty()
+                    {
                         if typ.param.is_empty() {
-                            implicit_ctor_params = Some(parent_shape.ctor_params.clone());
+                            implicit_ctor = Some((
+                                parent_shape.ctor_params.clone(),
+                                parent_shape.ctor_param_names.clone(),
+                            ));
+                            if explicitly_forwards_parent_args {
+                                parent_info_for_validation =
+                                    Some((parent_name.clone(), parent_shape.clone()));
+                            }
                         } else {
                             implicit_parent_info_for_validation = Some((parent_name, parent_shape));
                         }
@@ -584,8 +600,9 @@ impl SemanticAnalyzer {
             .cloned()
             .unwrap_or_else(|| self.infer_type_decl_params(typ));
         if let Some(shape) = self.type_shapes.get_mut(&typ.name) {
-            if let Some(implicit_params) = implicit_ctor_params {
+            if let Some((implicit_params, implicit_param_names)) = implicit_ctor {
                 shape.ctor_params = implicit_params;
+                shape.ctor_param_names = implicit_param_names;
             } else {
                 shape.ctor_params = typ
                     .param
@@ -603,6 +620,7 @@ impl SemanticAnalyzer {
                             })
                     })
                     .collect();
+                shape.ctor_param_names = typ.param.iter().map(|param| param.name.clone()).collect();
             }
         }
 
@@ -610,25 +628,46 @@ impl SemanticAnalyzer {
         let prev_type_context = self.current_type_context.clone();
         self.current_type_context = Some(typ.name.clone());
 
-        for param in &typ.param {
-            let param_ty = param
-                .types
-                .as_ref()
-                .map(SemanticType::from_type_ref)
-                .unwrap_or_else(|| {
-                    inferred_type_params
-                        .get(&param.name)
+        let constructor_scope_params = if typ.param.is_empty() {
+            self.type_shapes
+                .get(&typ.name)
+                .map(|shape| {
+                    shape
+                        .ctor_param_names
+                        .iter()
                         .cloned()
-                        .unwrap_or(SemanticType::Unknown)
-                });
+                        .zip(shape.ctor_params.iter().cloned())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        } else {
+            typ.param
+                .iter()
+                .map(|param| {
+                    let param_ty = param
+                        .types
+                        .as_ref()
+                        .map(SemanticType::from_type_ref)
+                        .unwrap_or_else(|| {
+                            inferred_type_params
+                                .get(&param.name)
+                                .cloned()
+                                .unwrap_or(SemanticType::Unknown)
+                        });
+                    (param.name.clone(), param_ty)
+                })
+                .collect::<Vec<_>>()
+        };
+
+        for (param_name, param_ty) in constructor_scope_params {
             self.define_local_with_state(
-                &param.name,
+                &param_name,
                 SymbolKind::Variable,
                 param_ty,
                 self.type_decl_span(typ),
                 true,
             );
-            self.mark_local_readonly(&param.name, "argumento de tipo es de solo lectura");
+            self.mark_local_readonly(&param_name, "argumento de tipo es de solo lectura");
         }
 
         // Validate parent constructor arguments inside the constructor parameters scope
@@ -799,6 +838,16 @@ impl SemanticAnalyzer {
 
         self.current_type_context = prev_type_context;
         self.exit_scope();
+    }
+
+    fn parent_args_forward_parent_params(&self, parent_shape: &TypeShape, args: &[Expr]) -> bool {
+        args.len() == parent_shape.ctor_param_names.len()
+            && args
+                .iter()
+                .zip(parent_shape.ctor_param_names.iter())
+                .all(|(arg, expected_name)| {
+                    matches!(&arg.kind, KindExpr::Variable(var) if &var.name == expected_name)
+                })
     }
 
     /// Valida un protocolo declarado y la compatibilidad con su padre.
@@ -1022,6 +1071,7 @@ impl SemanticAnalyzer {
             name.to_string(),
             TypeShape {
                 ctor_params: Vec::new(),
+                ctor_param_names: Vec::new(),
                 fields: HashMap::new(),
                 methods,
                 parent: None,
