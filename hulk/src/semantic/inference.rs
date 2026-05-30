@@ -133,6 +133,8 @@ impl SemanticAnalyzer {
                                     })
                             })
                             .collect();
+                        shape.ctor_param_names =
+                            typ.param.iter().map(|param| param.name.clone()).collect();
 
                         for (method_name, method_type) in method_sigs {
                             shape.methods.insert(method_name, method_type);

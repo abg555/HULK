@@ -1864,3 +1864,40 @@ print(new Dog())
         "expected override compatibility error for invalid toString signature, got: {diagnostics:?}"
     );
 }
+#[test]
+fn accepts_corrected_polar_point_implementation2() {
+    let input = r#"
+        type Point(x: Number, y: Number) {
+    x: Number = x;
+    y: Number = y;
+
+    getX(): Number => self.x;
+    getY(): Number => self.y;
+}
+
+type PolarPoint inherits Point(x,y) {
+    rho(): Number => sqrt(self.getX() ^ 2 + self.getY() ^ 2);
+}
+
+type PolarPoint2(phi: Number, rho: Number) inherits Point(rho * sin(phi), rho * cos(phi)) {
+    rho_saved: Number = rho;
+    rho2(): Number => self.rho_saved;
+}
+
+{
+    let p = new PolarPoint(3, 4) in
+        print("rho: " @ p.rho());
+
+    let q = new PolarPoint2(1.0, 2.0) in
+        print("rho2: " @ q.rho2());
+}
+    "#;
+
+    let result = analyze_program(input);
+
+    assert!(
+        result.is_ok(),
+        "El compilador debería aceptar la implementación corregida. Error: {:?}",
+        result.err()
+    );
+}
