@@ -555,6 +555,7 @@ impl SemanticAnalyzer {
         }
 
         let mut implicit_ctor_params = None;
+        let mut implicit_parent_info_for_validation = None;
         let mut parent_info_for_validation = None;
         if let Some(parent) = &typ.parent {
             if let SemanticType::Custom(parent_name) =
@@ -564,11 +565,12 @@ impl SemanticAnalyzer {
                     let has_explicit_parent_args =
                         typ.parent_arg.as_ref().is_some_and(|args| !args.is_empty());
                     // Implicit constructor parameter inheritance
-                    if typ.param.is_empty()
-                        && !has_explicit_parent_args
-                        && !parent_shape.ctor_params.is_empty()
-                    {
-                        implicit_ctor_params = Some(parent_shape.ctor_params.clone());
+                    if !has_explicit_parent_args && !parent_shape.ctor_params.is_empty() {
+                        if typ.param.is_empty() {
+                            implicit_ctor_params = Some(parent_shape.ctor_params.clone());
+                        } else {
+                            implicit_parent_info_for_validation = Some((parent_name, parent_shape));
+                        }
                     } else {
                         parent_info_for_validation = Some((parent_name, parent_shape));
                     }
@@ -632,6 +634,48 @@ impl SemanticAnalyzer {
         // Validate parent constructor arguments inside the constructor parameters scope
         if let Some((parent_name, parent_shape)) = parent_info_for_validation {
             self.validate_parent_constructor_args(typ, &parent_name, &parent_shape);
+        }
+        if let Some((parent_name, parent_shape)) = implicit_parent_info_for_validation {
+            let child_ctor_params = self
+                .type_shapes
+                .get(&typ.name)
+                .map(|shape| shape.ctor_params.clone())
+                .unwrap_or_default();
+
+            if parent_shape.ctor_params.len() != child_ctor_params.len() {
+                self.diagnostics.error(
+                    format!(
+                        "Constructor de {} espera {} argumentos heredados por {}, pero {} define {}",
+                        parent_name,
+                        parent_shape.ctor_params.len(),
+                        typ.name,
+                        typ.name,
+                        child_ctor_params.len()
+                    ),
+                    self.type_decl_span(typ),
+                );
+            }
+
+            for (idx, (expected, actual)) in parent_shape
+                .ctor_params
+                .iter()
+                .zip(child_ctor_params.iter())
+                .enumerate()
+            {
+                if !self.is_compatible_type(expected, actual) {
+                    self.diagnostics.error(
+                        format!(
+                            "Argumento heredado {} de {} hacia {} espera {}, pero el hijo define {}",
+                            idx + 1,
+                            parent_name,
+                            typ.name,
+                            expected,
+                            actual
+                        ),
+                        self.type_decl_span(typ),
+                    );
+                }
+            }
         }
 
         let mut field_names = HashSet::new();
