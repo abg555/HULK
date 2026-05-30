@@ -36,18 +36,14 @@ impl SemanticAnalyzer {
                                 })
                         })
                         .collect::<Vec<_>>();
-
                     let resolved_return = if func.return_type.is_some() {
                         func.return_type
                             .as_ref()
                             .map(SemanticType::from_type_ref)
                             .unwrap_or(SemanticType::Unknown)
                     } else {
-                        // Use inferred param types as context so calls like `print(x)`
-                        // can propagate `x`'s type into the inferred return.
-                        self.infer_return_type_with_context(&func.body, func.body.span, &inferred)
+                        self.infer_return_type(&func.body, func.body.span)
                     };
-
                     self.inferred_function_params
                         .insert(func.name.clone(), inferred);
                     self.inferred_function_returns
@@ -78,7 +74,7 @@ impl SemanticAnalyzer {
                                 .map(SemanticType::from_type_ref)
                                 .unwrap_or(SemanticType::Unknown)
                         } else {
-                            self.infer_return_type_with_context(&method.body, method.body.span, &inferred)
+                            self.infer_return_type(&method.body, method.body.span)
                         };
                         method_return_map.insert(method.name.clone(), ret);
                     }
@@ -370,39 +366,51 @@ impl SemanticAnalyzer {
                             }
                         }
 
-                        // If call targets a user function whose return was already
-                        // inferred earlier, use that information.
-                        if let Some(inferred_ret) = self.inferred_function_returns.get(&var.name).cloned() {
-                            return_types.push(inferred_ret);
-                            continue;
+                match self.infer_expr_type_hint(&call.callee) {
+                    SemanticType::Function(_, ret) => *ret,
+                    SemanticType::Custom(type_name) => {
+                        if let Some(SemanticType::Function(_, ret)) =
+                            self.lookup_functor_invoke_type(&type_name)
+                        {
+                            *ret
+                        } else {
+                            SemanticType::Unknown
                         }
                     }
-
-                    return_types.push(SemanticType::Unknown);
+                    _ => SemanticType::Unknown,
                 }
-                _ => return_types.push(SemanticType::Unknown),
             }
-        }
+            KindExpr::Binary(bin) => {
+                use crate::ast::BinaryOperator::*;
 
-        if return_types.is_empty() {
-            return SemanticType::Unknown;
-        }
-
-        let first = return_types[0].clone();
-        let all_same = return_types.iter().all(|t| match (t, &first) {
-            (SemanticType::Number, SemanticType::Number) => true,
-            (SemanticType::String, SemanticType::String) => true,
-            (SemanticType::Boolean, SemanticType::Boolean) => true,
-            (SemanticType::Vector(_), SemanticType::Vector(_)) => true,
-            (SemanticType::Unknown, _) => true,
-            (_, SemanticType::Unknown) => true,
-            _ => false,
-        });
-
-        if all_same {
-            first
-        } else {
-            SemanticType::Unknown
+                match bin.operator {
+                    Add | Sub | Mul | Div | Pow | Mod => SemanticType::Number,
+                    And | Or => SemanticType::Boolean,
+                    Concat | FullConcat => SemanticType::String,
+                    Equal | NotEqual | Less | Greater | LessEqual | GreaterEqual => {
+                        SemanticType::Boolean
+                    }
+                }
+            }
+            KindExpr::Unary(unary) => match unary.operator {
+                crate::ast::UnaryOperator::Negate => SemanticType::Number,
+                crate::ast::UnaryOperator::Not => SemanticType::Boolean,
+            },
+            KindExpr::Assign(assign) => self.infer_expr_type_hint(&assign.target),
+            KindExpr::Block(block) => block
+                .expressions
+                .last()
+                .map(|expr| self.infer_expr_type_hint(expr))
+                .unwrap_or(SemanticType::Boolean),
+            KindExpr::Array(array) => {
+                let element_ty = array
+                    .elements
+                    .first()
+                    .map(|expr| self.infer_expr_type_hint(expr))
+                    .unwrap_or(SemanticType::Unknown);
+                SemanticType::Vector(Box::new(element_ty))
+            }
+            _ => SemanticType::Unknown,
         }
     }
 
