@@ -1,0 +1,7 @@
+// Example: vector of objects and printing using toString
+type Person(name: String) {
+    name: String = name;
+    toString(): String => self.name;
+}
+
+let people = [new Person("Alice"), new Person("Bob")] in print(people);
