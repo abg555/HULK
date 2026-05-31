@@ -124,30 +124,30 @@
 // let pt = new Point() in
 //     print("x: " @ pt.getX() @ "; y: " @ pt.getY());
 
-// type Point(x: Number, y: Number) {
-//     x: Number = x;
-//     y: Number = y;
+type Point(x: Number, y: Number) {
+    x: Number = x;
+    y: Number = y;
 
-//     getX(): Number => self.x;
-//     getY(): Number => self.y;
-// }
+    getX(): Number => self.x;
+    getY(): Number => self.y;
+}
 
-// type PolarPoint(x: Number, y: Number) inherits Point(x, y) {
-//     rho(): Number => sqrt(self.getX() ^ 2 + self.getY() ^ 2);
-// }
+type PolarPoint inherits Point(x, y) {
+    rho(): Number => sqrt(self.getX() ^ 2 + self.getY() ^ 2);
+}
 
-// type PolarPoint2(phi: Number, rho: Number) inherits Point(rho * sin(phi), rho * cos(phi)) {
-//     rho_saved: Number = rho;
-//     rho2(): Number => self.rho_saved;
-// }
+type PolarPoint2(phi: Number, rho: Number) inherits Point(rho * sin(phi), rho * cos(phi)) {
+    rho_saved: Number = rho;
+    rho2(): Number => self.rho_saved;
+}
 
-// {
-//     let p = new PolarPoint(3, 4) in
-//         print("rho: " @ p.rho());
+{
+    let p = new PolarPoint(3, 4) in
+        print("rho: " @ p.rho());
 
-//     let q = new PolarPoint2(1.0, 2.0) in
-//         print("rho2: " @ q.rho2());
-// }
+    let q = new PolarPoint2(1.0, 2.0) in
+        print("rho2: " @ q.rho2());
+}
 
 
 // type Box {
