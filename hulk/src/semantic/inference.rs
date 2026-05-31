@@ -78,7 +78,11 @@ impl SemanticAnalyzer {
                                 .map(SemanticType::from_type_ref)
                                 .unwrap_or(SemanticType::Unknown)
                         } else {
-                            self.infer_return_type_with_context(&method.body, method.body.span, &inferred)
+                            self.infer_return_type_with_context(
+                                &method.body,
+                                method.body.span,
+                                &inferred,
+                            )
                         };
                         method_return_map.insert(method.name.clone(), ret);
                     }
@@ -237,7 +241,12 @@ impl SemanticAnalyzer {
     }
 
     /// Infiere el tipo de retorno a partir de las expresiones `return` encontradas.
-    pub(super) fn infer_return_type(&self, body: &Expr, _span: Span) -> SemanticType {
+    pub(super) fn infer_return_type_with_context(
+        &self,
+        body: &Expr,
+        _span: Span,
+        param_types: &HashMap<String, SemanticType>,
+    ) -> SemanticType {
         let return_exprs = self.collect_return_expressions(body);
 
         if return_exprs.is_empty() {
@@ -246,9 +255,13 @@ impl SemanticAnalyzer {
 
         let mut return_types = Vec::new();
         for ret_expr in return_exprs {
-            return_types.push(self.infer_expr_type_hint(ret_expr));
+            return_types.push(self.infer_expr_type_hint_with_context(ret_expr, param_types));
         }
 
+        self.merge_return_type_hints(return_types)
+    }
+
+    fn merge_return_type_hints(&self, return_types: Vec<SemanticType>) -> SemanticType {
         if return_types.is_empty() {
             return SemanticType::Unknown;
         }
@@ -271,8 +284,11 @@ impl SemanticAnalyzer {
         }
     }
 
-    /// Inferencia sintactica ligera usada antes del chequeo completo.
-    fn infer_expr_type_hint(&self, expr: &Expr) -> SemanticType {
+    fn infer_expr_type_hint_with_context(
+        &self,
+        expr: &Expr,
+        param_types: &HashMap<String, SemanticType>,
+    ) -> SemanticType {
         match &expr.kind {
             KindExpr::Literal(lit) => match lit.value {
                 LiteralValue::Number(_) => SemanticType::Number,
@@ -286,14 +302,15 @@ impl SemanticAnalyzer {
                         .map(|name| SemanticType::Custom(name.clone()))
                         .unwrap_or(SemanticType::Unknown)
                 } else {
-                    self.symbols
-                        .lookup(&var.name)
-                        .map(|sym| sym.typ.clone())
+                    param_types
+                        .get(&var.name)
+                        .cloned()
+                        .or_else(|| self.symbols.lookup(&var.name).map(|sym| sym.typ.clone()))
                         .unwrap_or(SemanticType::Unknown)
                 }
             }
             KindExpr::MemberAccess(member) => {
-                let object_ty = self.infer_expr_type_hint(&member.object);
+                let object_ty = self.infer_expr_type_hint_with_context(&member.object, param_types);
                 match object_ty {
                     SemanticType::Custom(type_name) => self
                         .lookup_member_type(&type_name, &member.field)
@@ -319,92 +336,79 @@ impl SemanticAnalyzer {
                     return call
                         .arguments
                         .first()
-                        .map(|arg| self.infer_expr_type_hint(arg))
+                        .map(|arg| self.infer_expr_type_hint_with_context(arg, param_types))
                         .unwrap_or(SemanticType::Unknown);
                 }
 
-        if return_exprs.is_empty() {
-            return SemanticType::Unknown;
-        }
-
-        let mut return_types = Vec::new();
-        for ret_expr in return_exprs {
-            match &ret_expr.kind {
-                KindExpr::Literal(lit) => match lit.value {
-                    LiteralValue::Number(_) => return_types.push(SemanticType::Number),
-                    LiteralValue::String(_) => return_types.push(SemanticType::String),
-                    LiteralValue::Bool(_) => return_types.push(SemanticType::Boolean),
-                },
-                KindExpr::Block(block) if block.expressions.is_empty() => {
-                    return_types.push(SemanticType::Boolean);
-                }
-                KindExpr::Array(_) => {
-                    return_types.push(SemanticType::Vector(Box::new(SemanticType::Unknown)))
-                }
-                KindExpr::Call(call) => {
-                    // Special-case: print(expr) should propagate expr's type
-                    if let KindExpr::Variable(var) = &call.callee.kind {
-                        if var.name == "print" {
-                            if let Some(arg) = call.arguments.get(0) {
-                                match &arg.kind {
-                                    KindExpr::Literal(lit) => match lit.value {
-                                        LiteralValue::Number(_) =>
-                                            return_types.push(SemanticType::Number),
-                                        LiteralValue::String(_) =>
-                                            return_types.push(SemanticType::String),
-                                        LiteralValue::Bool(_) =>
-                                            return_types.push(SemanticType::Boolean),
-                                    },
-                                    KindExpr::Variable(v) => {
-                                        if let Some(t) = param_types.get(&v.name) {
-                                            return_types.push(t.clone());
-                                        } else {
-                                            return_types.push(SemanticType::Unknown);
-                                        }
-                                    }
-                                    KindExpr::Binary(_) => {
-                                        // arithmetic ops produce numbers
-                                        return_types.push(SemanticType::Number)
-                                    }
-                                    _ => return_types.push(SemanticType::Unknown),
-                                }
-                                continue;
-                            }
-                        }
-
-                        // If call targets a user function whose return was already
-                        // inferred earlier, use that information.
-                        if let Some(inferred_ret) = self.inferred_function_returns.get(&var.name).cloned() {
-                            return_types.push(inferred_ret);
-                            continue;
+                match self.infer_expr_type_hint_with_context(&call.callee, param_types) {
+                    SemanticType::Function(_, ret) => *ret,
+                    SemanticType::Custom(type_name) => {
+                        if let Some(SemanticType::Function(_, ret)) =
+                            self.lookup_functor_invoke_type(&type_name)
+                        {
+                            *ret
+                        } else {
+                            SemanticType::Unknown
                         }
                     }
-
-                    return_types.push(SemanticType::Unknown);
+                    _ => SemanticType::Unknown,
                 }
-                _ => return_types.push(SemanticType::Unknown),
             }
-        }
+            KindExpr::Binary(bin) => {
+                use crate::ast::BinaryOperator::*;
 
-        if return_types.is_empty() {
-            return SemanticType::Unknown;
-        }
-
-        let first = return_types[0].clone();
-        let all_same = return_types.iter().all(|t| match (t, &first) {
-            (SemanticType::Number, SemanticType::Number) => true,
-            (SemanticType::String, SemanticType::String) => true,
-            (SemanticType::Boolean, SemanticType::Boolean) => true,
-            (SemanticType::Vector(_), SemanticType::Vector(_)) => true,
-            (SemanticType::Unknown, _) => true,
-            (_, SemanticType::Unknown) => true,
-            _ => false,
-        });
-
-        if all_same {
-            first
-        } else {
-            SemanticType::Unknown
+                match bin.operator {
+                    Add | Sub | Mul | Div | Pow | Mod => SemanticType::Number,
+                    And | Or => SemanticType::Boolean,
+                    Concat | FullConcat => SemanticType::String,
+                    Equal | NotEqual | Less | Greater | LessEqual | GreaterEqual => {
+                        SemanticType::Boolean
+                    }
+                }
+            }
+            KindExpr::Unary(unary) => match unary.operator {
+                crate::ast::UnaryOperator::Negate => SemanticType::Number,
+                crate::ast::UnaryOperator::Not => SemanticType::Boolean,
+            },
+            KindExpr::Assign(assign) => {
+                self.infer_expr_type_hint_with_context(&assign.target, param_types)
+            }
+            KindExpr::Block(block) => block
+                .expressions
+                .last()
+                .map(|expr| self.infer_expr_type_hint_with_context(expr, param_types))
+                .unwrap_or(SemanticType::Boolean),
+            KindExpr::Array(array) => {
+                let element_ty = array
+                    .elements
+                    .first()
+                    .map(|expr| self.infer_expr_type_hint_with_context(expr, param_types))
+                    .unwrap_or(SemanticType::Unknown);
+                SemanticType::Vector(Box::new(element_ty))
+            }
+            KindExpr::If(if_expr) => {
+                let then_ty =
+                    self.infer_expr_type_hint_with_context(&if_expr.then_branch, param_types);
+                let else_ty =
+                    self.infer_expr_type_hint_with_context(&if_expr.else_branch, param_types);
+                self.common_supertype(&then_ty, &else_ty)
+            }
+            KindExpr::Let(let_expr) => {
+                self.infer_expr_type_hint_with_context(&let_expr.body, param_types)
+            }
+            KindExpr::Match(match_expr) => {
+                let mut ty = SemanticType::Unknown;
+                for case in &match_expr.cases {
+                    let case_ty = self.infer_expr_type_hint_with_context(&case.body, param_types);
+                    ty = if matches!(ty, SemanticType::Unknown) {
+                        case_ty
+                    } else {
+                        self.common_supertype(&ty, &case_ty)
+                    };
+                }
+                ty
+            }
+            _ => SemanticType::Unknown,
         }
     }
 
