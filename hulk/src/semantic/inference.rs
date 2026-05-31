@@ -36,14 +36,18 @@ impl SemanticAnalyzer {
                                 })
                         })
                         .collect::<Vec<_>>();
+
                     let resolved_return = if func.return_type.is_some() {
                         func.return_type
                             .as_ref()
                             .map(SemanticType::from_type_ref)
                             .unwrap_or(SemanticType::Unknown)
                     } else {
-                        self.infer_return_type(&func.body, func.body.span)
+                        // Use inferred param types as context so calls like `print(x)`
+                        // can propagate `x`'s type into the inferred return.
+                        self.infer_return_type_with_context(&func.body, func.body.span, &inferred)
                     };
+
                     self.inferred_function_params
                         .insert(func.name.clone(), inferred);
                     self.inferred_function_returns
