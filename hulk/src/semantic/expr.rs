@@ -195,7 +195,13 @@ impl SemanticAnalyzer {
 
                     match callee {
                         SemanticType::Function(params, ret) => {
-                            self.check_callable_signature(&params, *ret, &arg_types, expr.span)
+                            let mut resolved_ret = self.check_callable_signature(&params, *ret, &arg_types, expr.span);
+                            if let KindExpr::Variable(var) = &call.callee.kind {
+                                if var.name == "print" && !arg_types.is_empty() {
+                                    resolved_ret = arg_types[0].clone();
+                                }
+                            }
+                            resolved_ret
                         }
                         SemanticType::Custom(type_name) => {
                             if let Some(invoke_signature) =
@@ -703,7 +709,7 @@ impl SemanticAnalyzer {
 
     /// Valida una expresion `if`, incluyendo ramas `elif` y `else`.
     fn check_if_expr(&mut self, if_expr: &IfExpr, span: Span) -> SemanticType {
-        self.report_unreachable_if_branches(if_expr, span);
+        //self.report_unreachable_if_branches(if_expr, span);
 
         let state_before_if = self.assigned_scopes.clone();
         self.assigned_scopes = state_before_if.clone();
