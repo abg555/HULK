@@ -2,6 +2,7 @@ use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::Module;
 use inkwell::types::{BasicTypeEnum, FloatType, IntType, StructType};
+use inkwell::types::BasicType;
 use inkwell::values::{FloatValue, GlobalValue, IntValue, PointerValue};
 use std::collections::HashMap;
 
@@ -119,6 +120,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                     .i8_type()
                     .ptr_type(inkwell::AddressSpace::default())
                     .into(),
+                context.i64_type().into(),
             ],
             false,
         );
@@ -161,29 +163,58 @@ impl<'ctx> CodeGenerator<'ctx> {
         self.define_functions(program, analysis)?;
         self.define_methods(program, analysis)?;
 
-        let expr = program
+        let global_exprs = program
             .items
             .iter()
-            .find_map(|item| match item {
+            .filter_map(|item| match item {
                 Item::GlobalExpr(expr) => Some(expr),
                 _ => None,
             })
-            .ok_or_else(|| "No hay expresion global para compilar".to_string())?;
+            .collect::<Vec<_>>();
 
-        let fn_type = self.f64_type.fn_type(&[], false);
+        let fn_type = if let Some(last_expr) = global_exprs.last() {
+            let value_kind = self.value_kind_for_expr(last_expr, analysis)?;
+            self.basic_type_for_kind(&value_kind)?.fn_type(&[], false)
+        } else {
+            self.f64_type.fn_type(&[], false)
+        };
+
         let function = self.module.add_function("main", fn_type, None);
         let block = self.context.append_basic_block(function, "entry");
 
         self.builder.position_at_end(block);
 
-        let value = self.lower_expr(expr, analysis)?;
-        let number = match value {
-            CodegenValue::Number(number) => number,
-            _ => self.f64_type.const_float(0.0),
-        };
-        self.builder
-            .build_return(Some(&number))
-            .map_err(|e| e.to_string())?;
+        if let Some((last_expr, leading_exprs)) = global_exprs.split_last() {
+            for expr in leading_exprs {
+                let _ = self.lower_expr(expr, analysis)?;
+            }
+
+            let value = self.lower_expr(last_expr, analysis)?;
+            match value {
+                CodegenValue::Number(number) => {
+                    self.builder
+                        .build_return(Some(&number))
+                        .map_err(|e| e.to_string())?;
+                }
+                CodegenValue::Bool(boolean) => {
+                    self.builder
+                        .build_return(Some(&boolean))
+                        .map_err(|e| e.to_string())?;
+                }
+                CodegenValue::String(string)
+                | CodegenValue::Object(string)
+                | CodegenValue::Vector(string) => {
+                    self.builder
+                        .build_return(Some(&string))
+                        .map_err(|e| e.to_string())?;
+                }
+            }
+        } else {
+            let number = self.f64_type.const_float(0.0);
+            self.builder
+                .build_return(Some(&number))
+                .map_err(|e| e.to_string())?;
+        }
 
         Ok(())
     }
@@ -461,6 +492,7 @@ impl<'ctx> CodeGenerator<'ctx> {
             SemanticType::Boolean => Ok(ValueKind::Bool),
             SemanticType::String => Ok(ValueKind::String),
             SemanticType::Custom(_) => Ok(ValueKind::Object),
+            SemanticType::Vector(_) => Ok(ValueKind::Vector),
             _ => Err(format!("Tipo no soportado en codegen: {:?} -> {}", expr.id, kind)),
         }
     }

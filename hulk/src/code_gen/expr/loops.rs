@@ -1,5 +1,8 @@
 use crate::ast::{ForExpr, KindExpr, WhileExpr};
 use crate::semantic::SemanticAnalysis;
+use crate::semantic::types::SemanticType;
+use inkwell::AddressSpace;
+use inkwell::types::BasicType;
 
 use super::super::{CodegenValue, CodeGenerator, ValueKind, VarInfo};
 
@@ -10,6 +13,9 @@ impl<'ctx> CodeGenerator<'ctx> {
         analysis: &SemanticAnalysis,
     ) -> Result<CodegenValue<'ctx>, String> {
         let result_kind = self.value_kind_for_expr(&while_expr.body, analysis)?;
+        let result_ptr = self.alloca_for_kind(&result_kind, "while_result")?;
+        let default_value = self.default_value_for_kind(result_kind)?;
+        self.store_value(result_ptr, default_value)?;
 
         let current_block = self
             .builder
@@ -35,64 +41,13 @@ impl<'ctx> CodeGenerator<'ctx> {
 
         self.builder.position_at_end(body_block);
         let body_value = self.lower_expr(&while_expr.body, analysis)?;
+        self.store_value(result_ptr, body_value)?;
         self.builder
             .build_unconditional_branch(cond_block)
             .map_err(|e| e.to_string())?;
 
         self.builder.position_at_end(after_block);
-        let default_value = self.default_value_for_kind(result_kind)?;
-
-        let phi = match result_kind {
-            ValueKind::Number => {
-                let phi = self
-                    .builder
-                    .build_phi(self.f64_type, "whiletmp")
-                    .map_err(|e| e.to_string())?;
-                phi.add_incoming(&[
-                    (&body_value.into_number()?, body_block),
-                    (&default_value.into_number()?, current_block),
-                ]);
-                CodegenValue::Number(phi.as_basic_value().into_float_value())
-            }
-            ValueKind::Bool => {
-                let phi = self
-                    .builder
-                    .build_phi(self.bool_type, "whiletmp_bool")
-                    .map_err(|e| e.to_string())?;
-                phi.add_incoming(&[
-                    (&body_value.into_bool()?, body_block),
-                    (&default_value.into_bool()?, current_block),
-                ]);
-                CodegenValue::Bool(phi.as_basic_value().into_int_value())
-            }
-            ValueKind::String => {
-                let i8_ptr_type = self.context.i8_type().ptr_type(inkwell::AddressSpace::default());
-                let phi = self
-                    .builder
-                    .build_phi(i8_ptr_type, "whiletmp_str")
-                    .map_err(|e| e.to_string())?;
-                phi.add_incoming(&[
-                    (&body_value.into_string()?, body_block),
-                    (&default_value.into_string()?, current_block),
-                ]);
-                CodegenValue::String(phi.as_basic_value().into_pointer_value())
-            }
-            ValueKind::Object => {
-                let i8_ptr_type = self.context.i8_type().ptr_type(inkwell::AddressSpace::default());
-                let phi = self
-                    .builder
-                    .build_phi(i8_ptr_type, "whiletmp_obj")
-                    .map_err(|e| e.to_string())?;
-                phi.add_incoming(&[
-                    (&body_value.into_object()?, body_block),
-                    (&default_value.into_object()?, current_block),
-                ]);
-                CodegenValue::Object(phi.as_basic_value().into_pointer_value())
-            }
-            ValueKind::Vector => return Err("While no soporta vectores todavia".to_string()),
-        };
-
-        Ok(phi)
+        self.load_value(&result_kind, result_ptr, "while_result")
     }
 
     pub(super) fn lower_for(
@@ -100,18 +55,39 @@ impl<'ctx> CodeGenerator<'ctx> {
         for_expr: &ForExpr,
         analysis: &SemanticAnalysis,
     ) -> Result<CodegenValue<'ctx>, String> {
-        let KindExpr::Call(call) = &for_expr.iterable.kind else {
-            return Err("Solo se soporta for sobre range(...)".to_string());
-        };
+        let current_block = self
+            .builder
+            .get_insert_block()
+            .ok_or_else(|| "No hay bloque de insercion activo".to_string())?;
+        let function = current_block
+            .get_parent()
+            .ok_or_else(|| "No hay funcion activa".to_string())?;
 
-        let KindExpr::Variable(callee) = &call.callee.kind else {
-            return Err("Solo se soporta for sobre range(...)".to_string());
-        };
+        let result_kind = self.value_kind_for_expr(&for_expr.body, analysis)?;
+        let result_ptr = self.alloca_for_kind(&result_kind, "for_result")?;
+        let default_value = self.default_value_for_kind(result_kind)?;
+        self.store_value(result_ptr, default_value)?;
 
-        if callee.name != "range" || call.arguments.len() != 2 {
-            return Err("Solo se soporta for sobre range(start, end)".to_string());
+        if let KindExpr::Call(call) = &for_expr.iterable.kind
+            && let KindExpr::Variable(callee) = &call.callee.kind
+            && callee.name == "range"
+            && call.arguments.len() == 2
+        {
+            return self.lower_for_range(for_expr, call, result_kind, result_ptr, function, analysis);
         }
 
+        self.lower_for_vector(for_expr, result_kind, result_ptr, function, analysis)
+    }
+
+    fn lower_for_range(
+        &mut self,
+        for_expr: &ForExpr,
+        call: &crate::ast::CallExpr,
+        result_kind: ValueKind,
+        result_ptr: inkwell::values::PointerValue<'ctx>,
+        function: inkwell::values::FunctionValue<'ctx>,
+        analysis: &SemanticAnalysis,
+    ) -> Result<CodegenValue<'ctx>, String> {
         let start = self.lower_expr(&call.arguments[0], analysis)?.into_number()?;
         let end = self.lower_expr(&call.arguments[1], analysis)?.into_number()?;
 
@@ -123,14 +99,6 @@ impl<'ctx> CodeGenerator<'ctx> {
         self.builder
             .build_store(counter_ptr, start)
             .map_err(|e| e.to_string())?;
-
-        let current_block = self
-            .builder
-            .get_insert_block()
-            .ok_or_else(|| "No hay bloque de insercion activo".to_string())?;
-        let function = current_block
-            .get_parent()
-            .ok_or_else(|| "No hay funcion activa".to_string())?;
 
         let cond_block = self.context.append_basic_block(function, "for_cond");
         let body_block = self.context.append_basic_block(function, "for_body");
@@ -177,6 +145,7 @@ impl<'ctx> CodeGenerator<'ctx> {
         );
 
         let body_value = self.lower_expr(&for_expr.body, analysis)?;
+        self.store_value(result_ptr, body_value)?;
         self.exit_scope();
 
         let next_value = self
@@ -195,59 +164,202 @@ impl<'ctx> CodeGenerator<'ctx> {
             .map_err(|e| e.to_string())?;
 
         self.builder.position_at_end(after_block);
-        let result_kind = self.value_kind_for_expr(&for_expr.body, analysis)?;
-        let default_value = self.default_value_for_kind(result_kind)?;
+        self.load_value(&result_kind, result_ptr, "for_result")
+    }
 
-        let phi = match result_kind {
-            ValueKind::Number => {
-                let phi = self
-                    .builder
-                    .build_phi(self.f64_type, "fortmp")
-                    .map_err(|e| e.to_string())?;
-                phi.add_incoming(&[
-                    (&body_value.into_number()?, body_block),
-                    (&default_value.into_number()?, current_block),
-                ]);
-                CodegenValue::Number(phi.as_basic_value().into_float_value())
-            }
-            ValueKind::Bool => {
-                let phi = self
-                    .builder
-                    .build_phi(self.bool_type, "fortmp_bool")
-                    .map_err(|e| e.to_string())?;
-                phi.add_incoming(&[
-                    (&body_value.into_bool()?, body_block),
-                    (&default_value.into_bool()?, current_block),
-                ]);
-                CodegenValue::Bool(phi.as_basic_value().into_int_value())
-            }
-            ValueKind::String => {
-                let i8_ptr_type = self.context.i8_type().ptr_type(inkwell::AddressSpace::default());
-                let phi = self
-                    .builder
-                    .build_phi(i8_ptr_type, "fortmp_str")
-                    .map_err(|e| e.to_string())?;
-                phi.add_incoming(&[
-                    (&body_value.into_string()?, body_block),
-                    (&default_value.into_string()?, current_block),
-                ]);
-                CodegenValue::String(phi.as_basic_value().into_pointer_value())
-            }
-            ValueKind::Object => {
-                let i8_ptr_type = self.context.i8_type().ptr_type(inkwell::AddressSpace::default());
-                let phi = self
-                    .builder
-                    .build_phi(i8_ptr_type, "fortmp_obj")
-                    .map_err(|e| e.to_string())?;
-                phi.add_incoming(&[
-                    (&body_value.into_object()?, body_block),
-                    (&default_value.into_object()?, current_block),
-                ]);
-                CodegenValue::Object(phi.as_basic_value().into_pointer_value())
-            }
-            ValueKind::Vector => return Err("For no soporta vectores todavia".to_string()),
+    fn lower_for_vector(
+        &mut self,
+        for_expr: &ForExpr,
+        result_kind: ValueKind,
+        result_ptr: inkwell::values::PointerValue<'ctx>,
+        function: inkwell::values::FunctionValue<'ctx>,
+        analysis: &SemanticAnalysis,
+    ) -> Result<CodegenValue<'ctx>, String> {
+        let iterable_value = self.lower_expr(&for_expr.iterable, analysis)?;
+        let vec_ptr = iterable_value.into_vector().map_err(|_| {
+            "Codegen de for solo soporta iterables vectoriales y range(start, end)".to_string()
+        })?;
+
+        let Some(SemanticType::Vector(inner)) = analysis.inferred_types.get(&for_expr.iterable.id)
+        else {
+            return Err(
+                "No se encontro tipo inferido del iterable vectorial en for".to_string(),
+            );
+        };
+        let elem_sem = *inner.clone();
+        let elem_kind = self.value_kind_from_semantic(&elem_sem)?;
+
+        let len_slot = self
+            .builder
+            .build_struct_gep(self.vector_struct, vec_ptr, 0, "for_vec_len_slot")
+            .map_err(|e| e.to_string())?;
+        let len_val = self
+            .builder
+            .build_load(self.context.i64_type(), len_slot, "for_vec_len")
+            .map_err(|e| e.to_string())?
+            .into_int_value();
+
+        let data_slot = self
+            .builder
+            .build_struct_gep(self.vector_struct, vec_ptr, 1, "for_vec_data_slot")
+            .map_err(|e| e.to_string())?;
+        let data_i8 = self
+            .builder
+            .build_load(
+                self.context.i8_type().ptr_type(AddressSpace::default()),
+                data_slot,
+                "for_vec_data_ptr",
+            )
+            .map_err(|e| e.to_string())?
+            .into_pointer_value();
+
+        let idx_ptr = self
+            .builder
+            .build_alloca(self.context.i64_type(), "for_vec_idx")
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_store(idx_ptr, self.context.i64_type().const_int(0, false))
+            .map_err(|e| e.to_string())?;
+
+        let elem_basic = self.basic_type_for_semantic(&elem_sem)?;
+        let elem_size = elem_basic
+            .size_of()
+            .ok_or_else(|| "No se pudo calcular tamano de elemento de vector en for".to_string())?;
+        let elem_size_i64 = self
+            .builder
+            .build_int_cast(elem_size, self.context.i64_type(), "for_vec_elem_size")
+            .map_err(|e| e.to_string())?;
+
+        let elem_ptr_type = match elem_basic {
+            inkwell::types::BasicTypeEnum::FloatType(ft) => ft.ptr_type(AddressSpace::default()),
+            inkwell::types::BasicTypeEnum::IntType(it) => it.ptr_type(AddressSpace::default()),
+            inkwell::types::BasicTypeEnum::PointerType(pt) => pt.ptr_type(AddressSpace::default()),
+            inkwell::types::BasicTypeEnum::StructType(st) => st.ptr_type(AddressSpace::default()),
+            inkwell::types::BasicTypeEnum::ArrayType(at) => at.ptr_type(AddressSpace::default()),
+            inkwell::types::BasicTypeEnum::VectorType(vt) => vt.ptr_type(AddressSpace::default()),
         };
 
-        Ok(phi)
+        let cond_block = self.context.append_basic_block(function, "for_cond");
+        let body_block = self.context.append_basic_block(function, "for_body");
+        let after_block = self.context.append_basic_block(function, "for_after");
+
+        self.builder
+            .build_unconditional_branch(cond_block)
+            .map_err(|e| e.to_string())?;
+
+        self.builder.position_at_end(cond_block);
+        let idx_val = self
+            .builder
+            .build_load(self.context.i64_type(), idx_ptr, "for_idx_load")
+            .map_err(|e| e.to_string())?
+            .into_int_value();
+        let cond_value = self
+            .builder
+            .build_int_compare(inkwell::IntPredicate::ULT, idx_val, len_val, "for_cmp")
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_conditional_branch(cond_value, body_block, after_block)
+            .map_err(|e| e.to_string())?;
+
+        self.builder.position_at_end(body_block);
+
+        let byte_offset = self
+            .builder
+            .build_int_mul(idx_val, elem_size_i64, "for_byte_offset")
+            .map_err(|e| e.to_string())?;
+
+        let elem_i8_ptr = unsafe {
+            self.builder
+                .build_in_bounds_gep(
+                    self.context.i8_type(),
+                    data_i8,
+                    &[byte_offset],
+                    "for_elem_i8",
+                )
+                .map_err(|e| e.to_string())?
+        };
+
+        let elem_ptr = self
+            .builder
+            .build_pointer_cast(elem_i8_ptr, elem_ptr_type, "for_elem_ptr")
+            .map_err(|e| e.to_string())?;
+
+        let elem_value = match elem_kind {
+            ValueKind::Number => CodegenValue::Number(
+                self.builder
+                    .build_load(self.f64_type, elem_ptr, "for_elem_load")
+                    .map_err(|e| e.to_string())?
+                    .into_float_value(),
+            ),
+            ValueKind::Bool => CodegenValue::Bool(
+                self.builder
+                    .build_load(self.bool_type, elem_ptr, "for_elem_load")
+                    .map_err(|e| e.to_string())?
+                    .into_int_value(),
+            ),
+            ValueKind::String => CodegenValue::String(
+                self.builder
+                    .build_load(
+                        self.context.i8_type().ptr_type(AddressSpace::default()),
+                        elem_ptr,
+                        "for_elem_load",
+                    )
+                    .map_err(|e| e.to_string())?
+                    .into_pointer_value(),
+            ),
+            ValueKind::Object => CodegenValue::Object(
+                self.builder
+                    .build_load(
+                        self.context.i8_type().ptr_type(AddressSpace::default()),
+                        elem_ptr,
+                        "for_elem_load",
+                    )
+                    .map_err(|e| e.to_string())?
+                    .into_pointer_value(),
+            ),
+            ValueKind::Vector => CodegenValue::Vector(
+                self.builder
+                    .build_load(
+                        self.vector_struct.ptr_type(AddressSpace::default()),
+                        elem_ptr,
+                        "for_elem_load",
+                    )
+                    .map_err(|e| e.to_string())?
+                    .into_pointer_value(),
+            ),
+        };
+
+        self.enter_scope();
+        let loop_var_ptr = self.alloca_for_kind(&elem_kind, &for_expr.variable)?;
+        self.store_value(loop_var_ptr, elem_value)?;
+        self.insert_var(
+            for_expr.variable.clone(),
+            VarInfo {
+                ptr: loop_var_ptr,
+                kind: elem_kind,
+            },
+        );
+
+        let body_value = self.lower_expr(&for_expr.body, analysis)?;
+        self.store_value(result_ptr, body_value)?;
+        self.exit_scope();
+
+        let next_idx = self
+            .builder
+            .build_int_add(
+                idx_val,
+                self.context.i64_type().const_int(1, false),
+                "for_next",
+            )
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_store(idx_ptr, next_idx)
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_unconditional_branch(cond_block)
+            .map_err(|e| e.to_string())?;
+
+        self.builder.position_at_end(after_block);
+        self.load_value(&result_kind, result_ptr, "for_result")
     }
 }

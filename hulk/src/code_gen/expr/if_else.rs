@@ -1,4 +1,5 @@
 use inkwell::basic_block::BasicBlock;
+use inkwell::AddressSpace;
 
 use crate::ast::IfExpr;
 use crate::semantic::SemanticAnalysis;
@@ -28,25 +29,24 @@ impl<'ctx> CodeGenerator<'ctx> {
         else_branch: &crate::ast::Expr,
         analysis: &SemanticAnalysis,
     ) -> Result<CodegenValue<'ctx>, String> {
-        let (current_cond, current_then, tail) = if let Some((head, rest)) = elif_branches.split_first() {
-            (condition, then_branch, Some((head, rest)))
-        } else {
-            (condition, then_branch, None)
-        };
-
-        let else_expr = if let Some(((elif_cond, elif_then), rest)) = tail {
-            let nested = crate::ast::IfExpr {
+        // Build nested else expression when there are elif branches.
+        // The nested IfExpr becomes the else-branch of the current if, preserving
+        // the original condition as the outermost check.
+        let nested_storage: crate::ast::Expr;
+        let else_expr: &crate::ast::Expr = if let Some(((elif_cond, elif_then), rest)) = elif_branches.split_first() {
+            let nested_if = crate::ast::IfExpr {
                 condition: Box::new(elif_cond.clone()),
                 then_branch: Box::new(elif_then.clone()),
                 elif_branches: rest.to_vec(),
                 else_branch: Box::new(else_branch.clone()),
             };
-            return self.lower_if(&nested, analysis);
+            nested_storage = crate::ast::mk_expr(crate::ast::KindExpr::If(nested_if));
+            &nested_storage
         } else {
             else_branch
         };
 
-        let cond_value = self.lower_expr(current_cond, analysis)?.into_bool()?;
+        let cond_value = self.lower_expr(condition, analysis)?.into_bool()?;
         let current_block = self
             .builder
             .get_insert_block()
@@ -64,13 +64,21 @@ impl<'ctx> CodeGenerator<'ctx> {
             .map_err(|e| e.to_string())?;
 
         self.builder.position_at_end(then_block);
-        let then_value = self.lower_expr(current_then, analysis)?;
+        let then_value = self.lower_expr(then_branch, analysis)?;
+        let then_end_block = self
+            .builder
+            .get_insert_block()
+            .ok_or_else(|| "No hay bloque then activo".to_string())?;
         self.builder
             .build_unconditional_branch(merge_block)
             .map_err(|e| e.to_string())?;
 
         self.builder.position_at_end(else_block);
         let else_value = self.lower_expr(else_expr, analysis)?;
+        let else_end_block = self
+            .builder
+            .get_insert_block()
+            .ok_or_else(|| "No hay bloque else activo".to_string())?;
         self.builder
             .build_unconditional_branch(merge_block)
             .map_err(|e| e.to_string())?;
@@ -80,7 +88,13 @@ impl<'ctx> CodeGenerator<'ctx> {
         }
 
         self.builder.position_at_end(merge_block);
-        self.build_phi_value(then_value.kind(), then_block, else_block, then_value, else_value)
+        self.build_phi_value(
+            then_value.kind(),
+            then_end_block,
+            else_end_block,
+            then_value,
+            else_value,
+        )
     }
 
     fn build_phi_value(
@@ -139,7 +153,18 @@ impl<'ctx> CodeGenerator<'ctx> {
                 Ok(CodegenValue::Object(phi.as_basic_value().into_pointer_value()))
             }
             ValueKind::Vector => {
-                return Err("If no soporta vectores todavia".to_string())
+                let vec_ptr_type = self
+                    .vector_struct
+                    .ptr_type(AddressSpace::default());
+                let phi = self
+                    .builder
+                    .build_phi(vec_ptr_type, "iftmp_vec")
+                    .map_err(|e| e.to_string())?;
+                phi.add_incoming(&[
+                    (&then_value.into_vector()?, then_block),
+                    (&else_value.into_vector()?, else_block),
+                ]);
+                Ok(CodegenValue::Vector(phi.as_basic_value().into_pointer_value()))
             }
         }
     }

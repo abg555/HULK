@@ -160,7 +160,13 @@ impl<'ctx> CodeGenerator<'ctx> {
                 self.builder.position_at_end(cont_block);
                 Ok(CodegenValue::Object(object_value))
             }
-            CodegenValue::Vector(_) => Err("Cast 'as' no soportado para vectores todavia".to_string()),
+            CodegenValue::Vector(vector) => {
+                if matches!(target, SemanticType::Vector(_)) {
+                    Ok(CodegenValue::Vector(vector))
+                } else {
+                    Err("Cast 'as' no soportado para Vector".to_string())
+                }
+            }
         }
     }
 

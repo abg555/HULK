@@ -79,20 +79,24 @@ extern {
 }
 
 pub Program: Program = {
-    <items:TopLevelItems> <expr:Expr> ";" => {
+    <items:TopLevelItems> <exprs:GlobalExprItems> => {
         let mut items = items;
-        items.push(Item::GlobalExpr(expr));
-        Program { items }
-    },
-    <items:TopLevelItems> <expr:Expr> => {
-        let mut items = items;
-        items.push(Item::GlobalExpr(expr));
+        items.extend(exprs);
         Program { items }
     },
     <items:TopLevelItems> => Program { items },
     <expr:Expr> ";" => Program { items: vec![Item::GlobalExpr(expr)] },
     <expr:Expr> => Program { items: vec![Item::GlobalExpr(expr)] },
 }
+
+GlobalExprItems: Vec<Item> = {
+    <e:Expr> => vec![Item::GlobalExpr(e)],
+    <mut list:GlobalExprItems> ";" <e:Expr> => {
+        list.push(Item::GlobalExpr(e));
+        list
+    },
+    <mut list:GlobalExprItems> ";" => list,
+};
 
 TopLevelItems: Vec<Item> = {
     <item:TopLevelItem> => vec![item],

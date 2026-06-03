@@ -98,7 +98,8 @@ impl<'ctx> CodeGenerator<'ctx> {
                     "El tipo {} no define el campo {}",
                     object_type, member.field
                 )
-            })?;
+            })?
+            + 1;
 
         let field_ptr = self
             .builder
