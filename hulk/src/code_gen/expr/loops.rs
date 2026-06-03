@@ -1,8 +1,6 @@
 use crate::ast::{ForExpr, KindExpr, WhileExpr};
 use crate::semantic::SemanticAnalysis;
 use crate::semantic::types::SemanticType;
-use inkwell::AddressSpace;
-use inkwell::types::BasicType;
 
 use super::super::{CodegenValue, CodeGenerator, ValueKind, VarInfo};
 
@@ -189,55 +187,10 @@ impl<'ctx> CodeGenerator<'ctx> {
         let elem_sem = *inner.clone();
         let elem_kind = self.value_kind_from_semantic(&elem_sem)?;
 
-        let len_slot = self
-            .builder
-            .build_struct_gep(self.vector_struct, vec_ptr, 0, "for_vec_len_slot")
-            .map_err(|e| e.to_string())?;
-        let len_val = self
-            .builder
-            .build_load(self.context.i64_type(), len_slot, "for_vec_len")
-            .map_err(|e| e.to_string())?
-            .into_int_value();
-
-        let data_slot = self
-            .builder
-            .build_struct_gep(self.vector_struct, vec_ptr, 1, "for_vec_data_slot")
-            .map_err(|e| e.to_string())?;
-        let data_i8 = self
-            .builder
-            .build_load(
-                self.context.i8_type().ptr_type(AddressSpace::default()),
-                data_slot,
-                "for_vec_data_ptr",
-            )
-            .map_err(|e| e.to_string())?
-            .into_pointer_value();
-
-        let idx_ptr = self
-            .builder
-            .build_alloca(self.context.i64_type(), "for_vec_idx")
-            .map_err(|e| e.to_string())?;
-        self.builder
-            .build_store(idx_ptr, self.context.i64_type().const_int(0, false))
-            .map_err(|e| e.to_string())?;
-
-        let elem_basic = self.basic_type_for_semantic(&elem_sem)?;
-        let elem_size = elem_basic
-            .size_of()
-            .ok_or_else(|| "No se pudo calcular tamano de elemento de vector en for".to_string())?;
-        let elem_size_i64 = self
-            .builder
-            .build_int_cast(elem_size, self.context.i64_type(), "for_vec_elem_size")
-            .map_err(|e| e.to_string())?;
-
-        let elem_ptr_type = match elem_basic {
-            inkwell::types::BasicTypeEnum::FloatType(ft) => ft.ptr_type(AddressSpace::default()),
-            inkwell::types::BasicTypeEnum::IntType(it) => it.ptr_type(AddressSpace::default()),
-            inkwell::types::BasicTypeEnum::PointerType(pt) => pt.ptr_type(AddressSpace::default()),
-            inkwell::types::BasicTypeEnum::StructType(st) => st.ptr_type(AddressSpace::default()),
-            inkwell::types::BasicTypeEnum::ArrayType(at) => at.ptr_type(AddressSpace::default()),
-            inkwell::types::BasicTypeEnum::VectorType(vt) => vt.ptr_type(AddressSpace::default()),
-        };
+        // Evaluate iterable exactly once and keep the same vector reference
+        // across next/current calls inside the loop.
+        let iterable_slot = self.alloca_for_kind(&ValueKind::Vector, "for_iterable")?;
+        self.store_value(iterable_slot, CodegenValue::Vector(vec_ptr))?;
 
         let cond_block = self.context.append_basic_block(function, "for_cond");
         let body_block = self.context.append_basic_block(function, "for_body");
@@ -248,86 +201,19 @@ impl<'ctx> CodeGenerator<'ctx> {
             .map_err(|e| e.to_string())?;
 
         self.builder.position_at_end(cond_block);
-        let idx_val = self
-            .builder
-            .build_load(self.context.i64_type(), idx_ptr, "for_idx_load")
-            .map_err(|e| e.to_string())?
-            .into_int_value();
-        let cond_value = self
-            .builder
-            .build_int_compare(inkwell::IntPredicate::ULT, idx_val, len_val, "for_cmp")
-            .map_err(|e| e.to_string())?;
+        let iterable_in_cond = self
+            .load_value(&ValueKind::Vector, iterable_slot, "for_iterable_cond")?
+            .into_vector()?;
+        let cond_value = self.vector_next(iterable_in_cond)?;
         self.builder
             .build_conditional_branch(cond_value, body_block, after_block)
             .map_err(|e| e.to_string())?;
 
         self.builder.position_at_end(body_block);
-
-        let byte_offset = self
-            .builder
-            .build_int_mul(idx_val, elem_size_i64, "for_byte_offset")
-            .map_err(|e| e.to_string())?;
-
-        let elem_i8_ptr = unsafe {
-            self.builder
-                .build_in_bounds_gep(
-                    self.context.i8_type(),
-                    data_i8,
-                    &[byte_offset],
-                    "for_elem_i8",
-                )
-                .map_err(|e| e.to_string())?
-        };
-
-        let elem_ptr = self
-            .builder
-            .build_pointer_cast(elem_i8_ptr, elem_ptr_type, "for_elem_ptr")
-            .map_err(|e| e.to_string())?;
-
-        let elem_value = match elem_kind {
-            ValueKind::Number => CodegenValue::Number(
-                self.builder
-                    .build_load(self.f64_type, elem_ptr, "for_elem_load")
-                    .map_err(|e| e.to_string())?
-                    .into_float_value(),
-            ),
-            ValueKind::Bool => CodegenValue::Bool(
-                self.builder
-                    .build_load(self.bool_type, elem_ptr, "for_elem_load")
-                    .map_err(|e| e.to_string())?
-                    .into_int_value(),
-            ),
-            ValueKind::String => CodegenValue::String(
-                self.builder
-                    .build_load(
-                        self.context.i8_type().ptr_type(AddressSpace::default()),
-                        elem_ptr,
-                        "for_elem_load",
-                    )
-                    .map_err(|e| e.to_string())?
-                    .into_pointer_value(),
-            ),
-            ValueKind::Object => CodegenValue::Object(
-                self.builder
-                    .build_load(
-                        self.context.i8_type().ptr_type(AddressSpace::default()),
-                        elem_ptr,
-                        "for_elem_load",
-                    )
-                    .map_err(|e| e.to_string())?
-                    .into_pointer_value(),
-            ),
-            ValueKind::Vector => CodegenValue::Vector(
-                self.builder
-                    .build_load(
-                        self.vector_struct.ptr_type(AddressSpace::default()),
-                        elem_ptr,
-                        "for_elem_load",
-                    )
-                    .map_err(|e| e.to_string())?
-                    .into_pointer_value(),
-            ),
-        };
+        let iterable_in_body = self
+            .load_value(&ValueKind::Vector, iterable_slot, "for_iterable_body")?
+            .into_vector()?;
+        let elem_value = self.vector_current(iterable_in_body, &elem_sem)?;
 
         self.enter_scope();
         let loop_var_ptr = self.alloca_for_kind(&elem_kind, &for_expr.variable)?;
@@ -343,18 +229,6 @@ impl<'ctx> CodeGenerator<'ctx> {
         let body_value = self.lower_expr(&for_expr.body, analysis)?;
         self.store_value(result_ptr, body_value)?;
         self.exit_scope();
-
-        let next_idx = self
-            .builder
-            .build_int_add(
-                idx_val,
-                self.context.i64_type().const_int(1, false),
-                "for_next",
-            )
-            .map_err(|e| e.to_string())?;
-        self.builder
-            .build_store(idx_ptr, next_idx)
-            .map_err(|e| e.to_string())?;
         self.builder
             .build_unconditional_branch(cond_block)
             .map_err(|e| e.to_string())?;

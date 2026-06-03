@@ -1,0 +1,5 @@
+// prueba 2 string
+{
+print("Hello" @ ", " @ "World!");
+print("foo" @@ "bar");
+}

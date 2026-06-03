@@ -1,3 +1,0 @@
-// Example: array literal and index
-// Expect: 2.000000 (printed as number)
-let a = [1, 2, 3] in print(a[1]);

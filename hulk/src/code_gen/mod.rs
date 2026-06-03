@@ -4,14 +4,23 @@ use inkwell::module::Module;
 use inkwell::types::{BasicTypeEnum, FloatType, IntType, StructType};
 use inkwell::types::BasicType;
 use inkwell::values::{FloatValue, GlobalValue, IntValue, PointerValue};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::fs;
 
 mod expr;
 mod functions;
 
 use crate::ast::{Item, Program, TypeDecl};
 use crate::semantic::SemanticAnalysis;
+use crate::semantic::SemanticAnalyzer;
 use crate::semantic::types::SemanticType;
+
+#[derive(Clone)]
+pub struct ImportedModuleUnit {
+    pub module: String,
+    pub program: Program,
+    pub analysis: SemanticAnalysis,
+}
 
 pub struct CodeGenerator<'ctx> {
     context: &'ctx Context,
@@ -155,9 +164,14 @@ impl<'ctx> CodeGenerator<'ctx> {
         program: &Program,
         analysis: &SemanticAnalysis,
     ) -> Result<(), String> {
+        let imported_units = self.collect_imported_module_units(program)?;
+
         self.collect_type_decls(program);
         self.prepare_object_types(analysis)?;
         self.declare_functions(program, analysis)?;
+        for unit in &imported_units {
+            self.declare_functions(&unit.program, &unit.analysis)?;
+        }
         self.declare_methods(program, analysis)?;
         self.prepare_vtables(analysis)?;
         self.define_functions(program, analysis)?;
@@ -215,6 +229,60 @@ impl<'ctx> CodeGenerator<'ctx> {
                 .build_return(Some(&number))
                 .map_err(|e| e.to_string())?;
         }
+
+        Ok(())
+    }
+
+    fn collect_imported_module_units(
+        &self,
+        program: &Program,
+    ) -> Result<Vec<ImportedModuleUnit>, String> {
+        let mut units = Vec::new();
+        let mut visited = HashSet::new();
+
+        for item in &program.items {
+            let Item::Import(import_decl) = item else {
+                continue;
+            };
+
+            self.load_import_unit_recursive(&import_decl.module, &mut visited, &mut units)?;
+        }
+
+        Ok(units)
+    }
+
+    fn load_import_unit_recursive(
+        &self,
+        module: &str,
+        visited: &mut HashSet<String>,
+        units: &mut Vec<ImportedModuleUnit>,
+    ) -> Result<(), String> {
+        if !visited.insert(module.to_string()) {
+            return Ok(());
+        }
+
+        let path = format!("{}.hulk", module.replace('.', "/"));
+        let source = fs::read_to_string(&path)
+            .map_err(|e| format!("No se pudo leer modulo importado {} ({}): {}", module, path, e))?;
+        let program = crate::parse_program(&source)
+            .map_err(|diags| format!("No se pudo parsear modulo importado {}: {:?}", module, diags))?;
+        let analysis = SemanticAnalyzer::new()
+            .analyze(&program)
+            .map_err(|diags| format!("No se pudo analizar modulo importado {}: {:?}", module, diags))?;
+
+        for item in &program.items {
+            let Item::Import(import_decl) = item else {
+                continue;
+            };
+
+            self.load_import_unit_recursive(&import_decl.module, visited, units)?;
+        }
+
+        units.push(ImportedModuleUnit {
+            module: module.to_string(),
+            program,
+            analysis,
+        });
 
         Ok(())
     }

@@ -4,15 +4,12 @@ use hulk::code_gen::CodeGenerator;
 use hulk::{parse_program, SemanticAnalyzer};
 
 fn main() {
-    let input = "let i = 0 in
-let result = 0 in {
-    while (i < 5) {
-        result := result + i;
-        i := i + 1;
-    };
-    if (result == 10) print("ok") else print("fail");
-    if (i == 5) print("ok") else print("fail");
-};";
+    let input = r#"
+let v = [1, 2, 3] in {
+    v.next();
+    for (x in v) x;
+}
+"#;
 
     let program = match parse_program(input) {
         Ok(program) => program,

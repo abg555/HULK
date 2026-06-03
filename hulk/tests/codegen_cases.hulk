@@ -157,6 +157,20 @@ let i = 0 in while (i < 1) {
 // expect: for_result
 for (x in range(0, 1)) [x]
 
+// example: for_vector_uses_next_current
+// expect: vec_next_cursor
+// expect: vec_has_next
+// expect: vec_current_byte_offset
+let v = [1, 2, 3] in for (x in v) x
+
+// example: for_vector_respects_cursor_state
+// expect: vec_next_cursor
+// expect: vec_current_byte_offset
+let v = [1, 2, 3] in {
+    v.next();
+    for (x in v) x;
+}
+
 // example: vector_methods
 // expect: vec_alloc
 type VecHolder {

@@ -1,6 +1,7 @@
 use hulk::code_gen::CodeGenerator;
 use hulk::{parse_program, SemanticAnalyzer};
 use inkwell::context::Context;
+use std::fs;
 
 #[derive(Debug)]
 struct CodegenCase {
@@ -140,4 +141,69 @@ fn codegen_cases_are_written_in_hulk() {
             }
         }
     }
+}
+
+#[test]
+fn codegen_supports_namespace_import_function_calls() {
+    let module_path = "codegen_math.hulk";
+    let module_source = r#"
+function mlog(x: Number): Number => x;
+"#;
+    fs::write(module_path, module_source).expect("expected temp module creation");
+
+    let source = r#"
+import codegen_math
+
+codegen_math.mlog(42)
+"#;
+
+    let ir = compile_to_ir(source);
+    fs::remove_file(module_path).ok();
+
+    assert!(
+        ir.contains("declare double @mlog(double)"),
+        "expected imported function declaration, IR:\n{}",
+        ir
+    );
+    assert!(
+        ir.contains("call double @mlog(double 4.200000e+01)"),
+        "expected imported function call, IR:\n{}",
+        ir
+    );
+}
+
+#[test]
+fn codegen_accepts_macro_expanded_arithmetic_programs() {
+    let source = r#"
+def twice(x: Number) => x * 2;
+
+twice(21)
+"#;
+
+    let ir = compile_to_ir(source);
+    assert!(
+        ir.contains("ret double 4.200000e+01"),
+        "expected successful lowering of expanded macro expression, IR:\n{}",
+        ir
+    );
+}
+
+#[test]
+fn codegen_accepts_trailing_block_macro_programs() {
+    let source = r#"
+def unless(cond: Boolean, *body) => if (!cond) body else 0;
+
+function run(flag: Boolean): Number => unless(flag) {
+    42;
+};
+
+run(false)
+"#;
+
+    let ir = compile_to_ir(source);
+    assert!(
+        ir.contains("if_then") && ir.contains("if_merge"),
+        "expected if lowering from expanded trailing-block macro, IR:\n{}",
+        ir
+    );
 }

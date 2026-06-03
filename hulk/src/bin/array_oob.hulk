@@ -1,3 +1,0 @@
-// Example: out-of-bounds index to demonstrate runtime panic
-// Expect: runtime panic message and abort
-print([1, 2, 3][3]);
