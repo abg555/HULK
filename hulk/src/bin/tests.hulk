@@ -1,0 +1,179 @@
+// -----------------------------------Minimal----------------------------------------------------------------------------------
+
+// // prueba 1 while 
+// let i = 0 in
+// let result = 0 in {
+// while (i < 5) {
+// result := result + i;
+// i := i + 1;
+// };
+// if (result == 10) print("ok") else print("fail");
+// if (i == 5) print("ok") else print("fail");
+// };
+
+// // prueba 2 string
+// {
+// print("Hello" @ ", " @ "World!");
+// print("foo" @@ "bar");
+// }
+
+//let binding
+// let x = 10, y = 20 in {
+//     if (x + y == 30) print("ok") else print("fail");
+//     let z = x * y in
+//         if (z == 200) print("ok") else print("fail");    
+// };
+
+// // functions
+// function double(x: Number): Number {
+//     x * 2;
+// }
+
+// function greet(name: String): String {
+//     "Hello, " @ name @ "!";
+// }
+
+// function fib(n: Number): Number {
+//     if (n <= 1) n else fib(n-1) + fib(n-2);
+// }
+
+// {
+//     if (double(7) == 14) print("ok") else print("fail");
+//     if (fib(10) == 55) print("ok") else print("fail");
+//     print(greet("HULK"));
+// }
+
+// // conditionals
+// function classify(n: Number): String {
+//     if (n < 0) "negative"
+//     elif (n == 0) "zero"
+//     else "positive";
+// }
+
+// {
+//     print(classify(-5));
+//     print(classify(0));
+//     print(classify(42));
+// } 
+
+// // arithmetic 
+// {
+//     if (2 + 3 * 4 == 14) print("ok") else print("fail");
+//     if (10 % 3 == 1) print("ok") else print("fail");
+//     if (2 ^ 10 == 1024) print("ok") else print("fail");
+//     if (10 / 2 == 5) print("ok") else print("fail");
+//     if (!(3 < 2)) print("ok") else print("fail");
+// }
+
+// ---------------------------------------OOP----------------------------------------------------------------------------------
+
+// // basic class
+// type Point(x_val: Number, y_val: Number) {
+//     x: Number = x_val;
+//     y: Number = y_val;
+
+//     getX(): Number => self.x;
+//     getY(): Number => self.y;
+//     sum(): Number => self.x + self.y;
+// }
+
+// let p = new Point(3, 4) in {
+//     if (p.getX() == 3) print("ok") else print("fail");
+//     if (p.getY() == 4) print("ok") else print("fail");
+//     if (p.sum() == 7) print("ok") else print("fail");
+// };
+
+// // inheritance
+// type Animal(n: String) {
+//     name: String = n;
+//     sound(): String { "..."; }
+// }
+
+// type Dog(n: String) inherits Animal(n) {
+//     sound(): String { "Woof"; }
+// }
+
+// type Cat(n: String) inherits Animal(n) {
+//     sound(): String { "Meow"; }
+// }
+
+// {
+//     let d = new Dog("Rex") in print(d.sound());
+//     let c = new Cat("Whiskers") in print(c.sound());
+//     let a: Animal = new Dog("Buddy") in print(a.sound());
+// }
+
+// // mutation
+// type Counter(start: Number) {
+//     val = start;
+
+//     current(): Number => self.val;
+//     increment() => self.val := self.val + 1;
+//     add(n: Number) => self.val := self.val + n;
+// }
+
+// let c = new Counter(0) in {
+//     c.increment();
+//     c.increment();
+//     c.add(3);
+//     if (c.current() == 5) print("ok") else print("fail");
+// };
+
+// -------------------------------------------------Types-----------------------------------------------------------------
+
+// // annoted
+// function add(x: Number, y: Number): Number {
+//     x + y;
+// }
+
+// function negate(b: Boolean): Boolean {
+//     !b;
+// }
+
+// {
+//     if (add(3, 4) == 7) print("ok") else print("fail");
+//     if (negate(false)) print("ok") else print("fail");
+//     if (add(0, 0) == 0) print("ok") else print("fail");
+// }
+
+
+// // builtins
+// {
+//     if (sqrt(9) == 3) print("ok") else print("fail");
+//     if (sqrt(4) == 2) print("ok") else print("fail");
+//     if (sin(0) == 0) print("ok") else print("fail");
+//     if (cos(0) == 1) print("ok") else print("fail");
+// }
+
+// // inference
+// function square(x) {
+//     x * x;
+// }
+
+// function add_one(x) {
+//     x + 1;
+// }
+
+// {
+//     if (square(5) == 25) print("ok") else print("fail");
+//     if (square(3) == 9) print("ok") else print("fail");
+//     if (add_one(41) == 42) print("ok") else print("fail");
+// }
+
+// --------------------------------------------------------Extras---------------------------------------------------------------------------------------------
+
+// // for_loop
+// let sum = 0 in {
+//     for (x in range(0, 5)) {
+//         sum := sum + x;
+//     };
+//     if (sum == 10) print("ok") else print("fail");
+// };
+
+// // range count
+// let count = 0 in {
+//     for (i in range(0, 10)) {
+//         count := count + 1;
+//     };
+//     if (count == 10) print("ok") else print("fail");
+// };

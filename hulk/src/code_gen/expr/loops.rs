@@ -1,5 +1,6 @@
 use crate::ast::{ForExpr, KindExpr, WhileExpr};
 use crate::semantic::SemanticAnalysis;
+use crate::semantic::types::SemanticType;
 
 use super::super::{CodegenValue, CodeGenerator, ValueKind, VarInfo};
 
@@ -10,6 +11,9 @@ impl<'ctx> CodeGenerator<'ctx> {
         analysis: &SemanticAnalysis,
     ) -> Result<CodegenValue<'ctx>, String> {
         let result_kind = self.value_kind_for_expr(&while_expr.body, analysis)?;
+        let result_ptr = self.alloca_for_kind(&result_kind, "while_result")?;
+        let default_value = self.default_value_for_kind(result_kind)?;
+        self.store_value(result_ptr, default_value)?;
 
         let current_block = self
             .builder
@@ -35,64 +39,13 @@ impl<'ctx> CodeGenerator<'ctx> {
 
         self.builder.position_at_end(body_block);
         let body_value = self.lower_expr(&while_expr.body, analysis)?;
+        self.store_value(result_ptr, body_value)?;
         self.builder
             .build_unconditional_branch(cond_block)
             .map_err(|e| e.to_string())?;
 
         self.builder.position_at_end(after_block);
-        let default_value = self.default_value_for_kind(result_kind)?;
-
-        let phi = match result_kind {
-            ValueKind::Number => {
-                let phi = self
-                    .builder
-                    .build_phi(self.f64_type, "whiletmp")
-                    .map_err(|e| e.to_string())?;
-                phi.add_incoming(&[
-                    (&body_value.into_number()?, body_block),
-                    (&default_value.into_number()?, current_block),
-                ]);
-                CodegenValue::Number(phi.as_basic_value().into_float_value())
-            }
-            ValueKind::Bool => {
-                let phi = self
-                    .builder
-                    .build_phi(self.bool_type, "whiletmp_bool")
-                    .map_err(|e| e.to_string())?;
-                phi.add_incoming(&[
-                    (&body_value.into_bool()?, body_block),
-                    (&default_value.into_bool()?, current_block),
-                ]);
-                CodegenValue::Bool(phi.as_basic_value().into_int_value())
-            }
-            ValueKind::String => {
-                let i8_ptr_type = self.context.i8_type().ptr_type(inkwell::AddressSpace::default());
-                let phi = self
-                    .builder
-                    .build_phi(i8_ptr_type, "whiletmp_str")
-                    .map_err(|e| e.to_string())?;
-                phi.add_incoming(&[
-                    (&body_value.into_string()?, body_block),
-                    (&default_value.into_string()?, current_block),
-                ]);
-                CodegenValue::String(phi.as_basic_value().into_pointer_value())
-            }
-            ValueKind::Object => {
-                let i8_ptr_type = self.context.i8_type().ptr_type(inkwell::AddressSpace::default());
-                let phi = self
-                    .builder
-                    .build_phi(i8_ptr_type, "whiletmp_obj")
-                    .map_err(|e| e.to_string())?;
-                phi.add_incoming(&[
-                    (&body_value.into_object()?, body_block),
-                    (&default_value.into_object()?, current_block),
-                ]);
-                CodegenValue::Object(phi.as_basic_value().into_pointer_value())
-            }
-            ValueKind::Vector => return Err("While no soporta vectores todavia".to_string()),
-        };
-
-        Ok(phi)
+        self.load_value(&result_kind, result_ptr, "while_result")
     }
 
     pub(super) fn lower_for(
@@ -100,18 +53,39 @@ impl<'ctx> CodeGenerator<'ctx> {
         for_expr: &ForExpr,
         analysis: &SemanticAnalysis,
     ) -> Result<CodegenValue<'ctx>, String> {
-        let KindExpr::Call(call) = &for_expr.iterable.kind else {
-            return Err("Solo se soporta for sobre range(...)".to_string());
-        };
+        let current_block = self
+            .builder
+            .get_insert_block()
+            .ok_or_else(|| "No hay bloque de insercion activo".to_string())?;
+        let function = current_block
+            .get_parent()
+            .ok_or_else(|| "No hay funcion activa".to_string())?;
 
-        let KindExpr::Variable(callee) = &call.callee.kind else {
-            return Err("Solo se soporta for sobre range(...)".to_string());
-        };
+        let result_kind = self.value_kind_for_expr(&for_expr.body, analysis)?;
+        let result_ptr = self.alloca_for_kind(&result_kind, "for_result")?;
+        let default_value = self.default_value_for_kind(result_kind)?;
+        self.store_value(result_ptr, default_value)?;
 
-        if callee.name != "range" || call.arguments.len() != 2 {
-            return Err("Solo se soporta for sobre range(start, end)".to_string());
+        if let KindExpr::Call(call) = &for_expr.iterable.kind
+            && let KindExpr::Variable(callee) = &call.callee.kind
+            && callee.name == "range"
+            && call.arguments.len() == 2
+        {
+            return self.lower_for_range(for_expr, call, result_kind, result_ptr, function, analysis);
         }
 
+        self.lower_for_vector(for_expr, result_kind, result_ptr, function, analysis)
+    }
+
+    fn lower_for_range(
+        &mut self,
+        for_expr: &ForExpr,
+        call: &crate::ast::CallExpr,
+        result_kind: ValueKind,
+        result_ptr: inkwell::values::PointerValue<'ctx>,
+        function: inkwell::values::FunctionValue<'ctx>,
+        analysis: &SemanticAnalysis,
+    ) -> Result<CodegenValue<'ctx>, String> {
         let start = self.lower_expr(&call.arguments[0], analysis)?.into_number()?;
         let end = self.lower_expr(&call.arguments[1], analysis)?.into_number()?;
 
@@ -123,14 +97,6 @@ impl<'ctx> CodeGenerator<'ctx> {
         self.builder
             .build_store(counter_ptr, start)
             .map_err(|e| e.to_string())?;
-
-        let current_block = self
-            .builder
-            .get_insert_block()
-            .ok_or_else(|| "No hay bloque de insercion activo".to_string())?;
-        let function = current_block
-            .get_parent()
-            .ok_or_else(|| "No hay funcion activa".to_string())?;
 
         let cond_block = self.context.append_basic_block(function, "for_cond");
         let body_block = self.context.append_basic_block(function, "for_body");
@@ -177,6 +143,7 @@ impl<'ctx> CodeGenerator<'ctx> {
         );
 
         let body_value = self.lower_expr(&for_expr.body, analysis)?;
+        self.store_value(result_ptr, body_value)?;
         self.exit_scope();
 
         let next_value = self
@@ -195,59 +162,78 @@ impl<'ctx> CodeGenerator<'ctx> {
             .map_err(|e| e.to_string())?;
 
         self.builder.position_at_end(after_block);
-        let result_kind = self.value_kind_for_expr(&for_expr.body, analysis)?;
-        let default_value = self.default_value_for_kind(result_kind)?;
+        self.load_value(&result_kind, result_ptr, "for_result")
+    }
 
-        let phi = match result_kind {
-            ValueKind::Number => {
-                let phi = self
-                    .builder
-                    .build_phi(self.f64_type, "fortmp")
-                    .map_err(|e| e.to_string())?;
-                phi.add_incoming(&[
-                    (&body_value.into_number()?, body_block),
-                    (&default_value.into_number()?, current_block),
-                ]);
-                CodegenValue::Number(phi.as_basic_value().into_float_value())
-            }
-            ValueKind::Bool => {
-                let phi = self
-                    .builder
-                    .build_phi(self.bool_type, "fortmp_bool")
-                    .map_err(|e| e.to_string())?;
-                phi.add_incoming(&[
-                    (&body_value.into_bool()?, body_block),
-                    (&default_value.into_bool()?, current_block),
-                ]);
-                CodegenValue::Bool(phi.as_basic_value().into_int_value())
-            }
-            ValueKind::String => {
-                let i8_ptr_type = self.context.i8_type().ptr_type(inkwell::AddressSpace::default());
-                let phi = self
-                    .builder
-                    .build_phi(i8_ptr_type, "fortmp_str")
-                    .map_err(|e| e.to_string())?;
-                phi.add_incoming(&[
-                    (&body_value.into_string()?, body_block),
-                    (&default_value.into_string()?, current_block),
-                ]);
-                CodegenValue::String(phi.as_basic_value().into_pointer_value())
-            }
-            ValueKind::Object => {
-                let i8_ptr_type = self.context.i8_type().ptr_type(inkwell::AddressSpace::default());
-                let phi = self
-                    .builder
-                    .build_phi(i8_ptr_type, "fortmp_obj")
-                    .map_err(|e| e.to_string())?;
-                phi.add_incoming(&[
-                    (&body_value.into_object()?, body_block),
-                    (&default_value.into_object()?, current_block),
-                ]);
-                CodegenValue::Object(phi.as_basic_value().into_pointer_value())
-            }
-            ValueKind::Vector => return Err("For no soporta vectores todavia".to_string()),
+    fn lower_for_vector(
+        &mut self,
+        for_expr: &ForExpr,
+        result_kind: ValueKind,
+        result_ptr: inkwell::values::PointerValue<'ctx>,
+        function: inkwell::values::FunctionValue<'ctx>,
+        analysis: &SemanticAnalysis,
+    ) -> Result<CodegenValue<'ctx>, String> {
+        let iterable_value = self.lower_expr(&for_expr.iterable, analysis)?;
+        let vec_ptr = iterable_value.into_vector().map_err(|_| {
+            "Codegen de for solo soporta iterables vectoriales y range(start, end)".to_string()
+        })?;
+
+        let Some(SemanticType::Vector(inner)) = analysis.inferred_types.get(&for_expr.iterable.id)
+        else {
+            return Err(
+                "No se encontro tipo inferido del iterable vectorial en for".to_string(),
+            );
         };
+        let elem_sem = *inner.clone();
+        let elem_kind = self.value_kind_from_semantic(&elem_sem)?;
 
-        Ok(phi)
+        // Evaluate iterable exactly once and keep the same vector reference
+        // across next/current calls inside the loop.
+        let iterable_slot = self.alloca_for_kind(&ValueKind::Vector, "for_iterable")?;
+        self.store_value(iterable_slot, CodegenValue::Vector(vec_ptr))?;
+
+        let cond_block = self.context.append_basic_block(function, "for_cond");
+        let body_block = self.context.append_basic_block(function, "for_body");
+        let after_block = self.context.append_basic_block(function, "for_after");
+
+        self.builder
+            .build_unconditional_branch(cond_block)
+            .map_err(|e| e.to_string())?;
+
+        self.builder.position_at_end(cond_block);
+        let iterable_in_cond = self
+            .load_value(&ValueKind::Vector, iterable_slot, "for_iterable_cond")?
+            .into_vector()?;
+        let cond_value = self.vector_next(iterable_in_cond)?;
+        self.builder
+            .build_conditional_branch(cond_value, body_block, after_block)
+            .map_err(|e| e.to_string())?;
+
+        self.builder.position_at_end(body_block);
+        let iterable_in_body = self
+            .load_value(&ValueKind::Vector, iterable_slot, "for_iterable_body")?
+            .into_vector()?;
+        let elem_value = self.vector_current(iterable_in_body, &elem_sem)?;
+
+        self.enter_scope();
+        let loop_var_ptr = self.alloca_for_kind(&elem_kind, &for_expr.variable)?;
+        self.store_value(loop_var_ptr, elem_value)?;
+        self.insert_var(
+            for_expr.variable.clone(),
+            VarInfo {
+                ptr: loop_var_ptr,
+                kind: elem_kind,
+            },
+        );
+
+        let body_value = self.lower_expr(&for_expr.body, analysis)?;
+        self.store_value(result_ptr, body_value)?;
+        self.exit_scope();
+        self.builder
+            .build_unconditional_branch(cond_block)
+            .map_err(|e| e.to_string())?;
+
+        self.builder.position_at_end(after_block);
+        self.load_value(&result_kind, result_ptr, "for_result")
     }
 }

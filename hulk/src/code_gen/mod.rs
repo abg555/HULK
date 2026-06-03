@@ -2,15 +2,25 @@ use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::Module;
 use inkwell::types::{BasicTypeEnum, FloatType, IntType, StructType};
+use inkwell::types::BasicType;
 use inkwell::values::{FloatValue, GlobalValue, IntValue, PointerValue};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::fs;
 
 mod expr;
 mod functions;
 
 use crate::ast::{Item, Program, TypeDecl};
 use crate::semantic::SemanticAnalysis;
+use crate::semantic::SemanticAnalyzer;
 use crate::semantic::types::SemanticType;
+
+#[derive(Clone)]
+pub struct ImportedModuleUnit {
+    pub module: String,
+    pub program: Program,
+    pub analysis: SemanticAnalysis,
+}
 
 pub struct CodeGenerator<'ctx> {
     context: &'ctx Context,
@@ -119,6 +129,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                     .i8_type()
                     .ptr_type(inkwell::AddressSpace::default())
                     .into(),
+                context.i64_type().into(),
             ],
             false,
         );
@@ -153,37 +164,125 @@ impl<'ctx> CodeGenerator<'ctx> {
         program: &Program,
         analysis: &SemanticAnalysis,
     ) -> Result<(), String> {
+        let imported_units = self.collect_imported_module_units(program)?;
+
         self.collect_type_decls(program);
         self.prepare_object_types(analysis)?;
         self.declare_functions(program, analysis)?;
+        for unit in &imported_units {
+            self.declare_functions(&unit.program, &unit.analysis)?;
+        }
         self.declare_methods(program, analysis)?;
         self.prepare_vtables(analysis)?;
         self.define_functions(program, analysis)?;
         self.define_methods(program, analysis)?;
 
-        let expr = program
+        let global_exprs = program
             .items
             .iter()
-            .find_map(|item| match item {
+            .filter_map(|item| match item {
                 Item::GlobalExpr(expr) => Some(expr),
                 _ => None,
             })
-            .ok_or_else(|| "No hay expresion global para compilar".to_string())?;
+            .collect::<Vec<_>>();
 
-        let fn_type = self.f64_type.fn_type(&[], false);
+        let fn_type = if let Some(last_expr) = global_exprs.last() {
+            let value_kind = self.value_kind_for_expr(last_expr, analysis)?;
+            self.basic_type_for_kind(&value_kind)?.fn_type(&[], false)
+        } else {
+            self.f64_type.fn_type(&[], false)
+        };
+
         let function = self.module.add_function("main", fn_type, None);
         let block = self.context.append_basic_block(function, "entry");
 
         self.builder.position_at_end(block);
 
-        let value = self.lower_expr(expr, analysis)?;
-        let number = match value {
-            CodegenValue::Number(number) => number,
-            _ => self.f64_type.const_float(0.0),
-        };
-        self.builder
-            .build_return(Some(&number))
-            .map_err(|e| e.to_string())?;
+        if let Some((last_expr, leading_exprs)) = global_exprs.split_last() {
+            for expr in leading_exprs {
+                let _ = self.lower_expr(expr, analysis)?;
+            }
+
+            let value = self.lower_expr(last_expr, analysis)?;
+            match value {
+                CodegenValue::Number(number) => {
+                    self.builder
+                        .build_return(Some(&number))
+                        .map_err(|e| e.to_string())?;
+                }
+                CodegenValue::Bool(boolean) => {
+                    self.builder
+                        .build_return(Some(&boolean))
+                        .map_err(|e| e.to_string())?;
+                }
+                CodegenValue::String(string)
+                | CodegenValue::Object(string)
+                | CodegenValue::Vector(string) => {
+                    self.builder
+                        .build_return(Some(&string))
+                        .map_err(|e| e.to_string())?;
+                }
+            }
+        } else {
+            let number = self.f64_type.const_float(0.0);
+            self.builder
+                .build_return(Some(&number))
+                .map_err(|e| e.to_string())?;
+        }
+
+        Ok(())
+    }
+
+    fn collect_imported_module_units(
+        &self,
+        program: &Program,
+    ) -> Result<Vec<ImportedModuleUnit>, String> {
+        let mut units = Vec::new();
+        let mut visited = HashSet::new();
+
+        for item in &program.items {
+            let Item::Import(import_decl) = item else {
+                continue;
+            };
+
+            self.load_import_unit_recursive(&import_decl.module, &mut visited, &mut units)?;
+        }
+
+        Ok(units)
+    }
+
+    fn load_import_unit_recursive(
+        &self,
+        module: &str,
+        visited: &mut HashSet<String>,
+        units: &mut Vec<ImportedModuleUnit>,
+    ) -> Result<(), String> {
+        if !visited.insert(module.to_string()) {
+            return Ok(());
+        }
+
+        let path = format!("{}.hulk", module.replace('.', "/"));
+        let source = fs::read_to_string(&path)
+            .map_err(|e| format!("No se pudo leer modulo importado {} ({}): {}", module, path, e))?;
+        let program = crate::parse_program(&source)
+            .map_err(|diags| format!("No se pudo parsear modulo importado {}: {:?}", module, diags))?;
+        let analysis = SemanticAnalyzer::new()
+            .analyze(&program)
+            .map_err(|diags| format!("No se pudo analizar modulo importado {}: {:?}", module, diags))?;
+
+        for item in &program.items {
+            let Item::Import(import_decl) = item else {
+                continue;
+            };
+
+            self.load_import_unit_recursive(&import_decl.module, visited, units)?;
+        }
+
+        units.push(ImportedModuleUnit {
+            module: module.to_string(),
+            program,
+            analysis,
+        });
 
         Ok(())
     }
@@ -461,6 +560,7 @@ impl<'ctx> CodeGenerator<'ctx> {
             SemanticType::Boolean => Ok(ValueKind::Bool),
             SemanticType::String => Ok(ValueKind::String),
             SemanticType::Custom(_) => Ok(ValueKind::Object),
+            SemanticType::Vector(_) => Ok(ValueKind::Vector),
             _ => Err(format!("Tipo no soportado en codegen: {:?} -> {}", expr.id, kind)),
         }
     }

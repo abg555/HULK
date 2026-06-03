@@ -126,6 +126,14 @@ impl<'ctx> CodeGenerator<'ctx> {
             .build_store(data_slot, data_cast)
             .map_err(|e| e.to_string())?;
 
+        let cursor_slot = self
+            .builder
+            .build_struct_gep(self.vector_struct, vec_typed, 2, "vec_cursor_slot")
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_store(cursor_slot, self.context.i64_type().const_int(u64::MAX, false))
+            .map_err(|e| e.to_string())?;
+
         // fill elements
         for (i, elem_expr) in array.elements.iter().enumerate() {
             let value = self.lower_expr(elem_expr, analysis)?;
@@ -323,6 +331,14 @@ impl<'ctx> CodeGenerator<'ctx> {
             .map_err(|e| e.to_string())?;
         self.builder
             .build_store(data_slot_dst, data_cast)
+            .map_err(|e| e.to_string())?;
+
+        let cursor_slot_dst = self
+            .builder
+            .build_struct_gep(self.vector_struct, vec_typed, 2, "dst_cursor_slot")
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_store(cursor_slot_dst, self.context.i64_type().const_int(u64::MAX, false))
             .map_err(|e| e.to_string())?;
 
         // Loop: for i in 0..len_val { src_elem = load(src, i); let var = src_elem; element_val = lower_expr(element); store(dst, i, element_val) }

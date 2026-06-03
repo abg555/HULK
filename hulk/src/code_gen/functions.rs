@@ -105,13 +105,10 @@ impl<'ctx> CodeGenerator<'ctx> {
                             .build_store(ptr, arg.into_int_value())
                             .map_err(|e| e.to_string())?;
                     }
-                    ValueKind::String | ValueKind::Object => {
+                    ValueKind::String | ValueKind::Object | ValueKind::Vector => {
                         self.builder
                             .build_store(ptr, arg.into_pointer_value())
                             .map_err(|e| e.to_string())?;
-                    }
-                    ValueKind::Vector => {
-                        return Err("Vectores no soportados aun en parametros".to_string())
                     }
                 }
 
@@ -148,7 +145,10 @@ impl<'ctx> CodeGenerator<'ctx> {
                         .map_err(|e| e.to_string())?;
                 }
                 ValueKind::Vector => {
-                    return Err("Vectores no soportados aun como retorno".to_string())
+                    let vec_val = value.into_vector()?;
+                    self.builder
+                        .build_return(Some(&vec_val))
+                        .map_err(|e| e.to_string())?;
                 }
             }
 
@@ -220,13 +220,10 @@ impl<'ctx> CodeGenerator<'ctx> {
                                 .build_store(ptr, arg.into_int_value())
                                 .map_err(|e| e.to_string())?;
                         }
-                        ValueKind::String | ValueKind::Object => {
+                        ValueKind::String | ValueKind::Object | ValueKind::Vector => {
                             self.builder
                                 .build_store(ptr, arg.into_pointer_value())
                                 .map_err(|e| e.to_string())?;
-                        }
-                        ValueKind::Vector => {
-                            return Err("Vectores no soportados aun en parametros".to_string())
                         }
                     }
 
@@ -263,7 +260,10 @@ impl<'ctx> CodeGenerator<'ctx> {
                             .map_err(|e| e.to_string())?;
                     }
                     ValueKind::Vector => {
-                        return Err("Vectores no soportados aun como retorno".to_string())
+                        let vec_val = value.into_vector()?;
+                        self.builder
+                            .build_return(Some(&vec_val))
+                            .map_err(|e| e.to_string())?;
                     }
                 }
 

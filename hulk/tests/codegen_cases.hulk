@@ -28,7 +28,7 @@ classify(2)
 // expect: while_cond
 // expect: while_body
 // expect: while_after
-// expect: phi double
+// expect: while_result
 let a = 3 in while (a >= 0) {
     a := a - 1;
     a
@@ -38,7 +38,7 @@ let a = 3 in while (a >= 0) {
 // expect: for_cond
 // expect: for_body
 // expect: for_after
-// expect: phi double
+// expect: for_result
 for (x in range(0, 3)) x + 1
 
 // example: inherited_objects
@@ -134,4 +134,124 @@ type Child inherits Base {
 let x: Base = new Child() in {
     x is Child;
     x as Child;
+}
+
+// example: vector_param_return
+// expect: vec_alloc
+function id_vec(v: Number[]): Number[] => v;
+id_vec([1, 2, 3])
+
+// example: vector_if_result
+// expect: iftmp_vec
+function choose_vec(flag: Boolean, a: Number[], b: Number[]): Number[] => if (flag) a else b;
+choose_vec(true, [1], [2])
+
+// example: vector_while_result
+// expect: while_result
+let i = 0 in while (i < 1) {
+    i := i + 1;
+    [1, 2]
+}
+
+// example: vector_for_result
+// expect: for_result
+for (x in range(0, 1)) [x]
+
+// example: for_vector_uses_next_current
+// expect: vec_next_cursor
+// expect: vec_has_next
+// expect: vec_current_byte_offset
+let v = [1, 2, 3] in for (x in v) x
+
+// example: for_vector_respects_cursor_state
+// expect: vec_next_cursor
+// expect: vec_current_byte_offset
+let v = [1, 2, 3] in {
+    v.next();
+    for (x in v) x;
+}
+
+// example: vector_methods
+// expect: vec_alloc
+type VecHolder {
+    items: Number[] = [1, 2];
+
+    setItems(v: Number[]): Number[] => v;
+    getItems(): Number[] => self.items;
+}
+
+let h = new VecHolder() in h.setItems(h.getItems())
+
+// example: vector_cast
+let v = [1, 2] in v as Number[];
+
+// example: print_vector
+// expect: vec_render
+// expect: @printf
+print([1, 2, 3])
+
+let i = 10 in
+while (i < 0) {
+    i := i + 1;
+    [1,2]
+}
+
+let v = [[1,2], [3,4], [5,6]] in
+v.size()
+
+type Box {
+    items: Number[] = [1];
+
+    set(v: Number[]): Number[] => {
+        self.items := v;
+        self.items
+    }
+
+    get(): Number[] => self.items;
+}
+
+let b = new Box() in
+b.set([7,8]) + b.get()
+
+type A {
+    f(): Number => 1;
+    g(): Number => self.f() + 1;
+}
+
+let a = new A() in
+a.g()
+
+function f(x: Number[], y: Number[]): Number[] => y;
+
+f(
+    (let a = [1] in a),
+    (let b = [2] in b)
+)
+
+
+type A {
+    f(): Number[] => [1,2];
+}
+
+let a = new A() in
+a.f().size()
+
+let v = [1,2,3] in
+(v as Number[]) as Number[]
+
+type Acc {
+    v: Number[] = [1];
+
+    add(x: Number): Number[] => {
+        self.v := [x];
+        self.v
+    }
+}
+
+let a = new Acc() in
+let i = 0 in
+while (i < 3) {
+    a.add(i);
+    i := i + 1;
+    a.v
 }

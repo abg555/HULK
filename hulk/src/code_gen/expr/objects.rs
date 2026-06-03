@@ -160,7 +160,13 @@ impl<'ctx> CodeGenerator<'ctx> {
                 self.builder.position_at_end(cont_block);
                 Ok(CodegenValue::Object(object_value))
             }
-            CodegenValue::Vector(_) => Err("Cast 'as' no soportado para vectores todavia".to_string()),
+            CodegenValue::Vector(vector) => {
+                if matches!(target, SemanticType::Vector(_)) {
+                    Ok(CodegenValue::Vector(vector))
+                } else {
+                    Err("Cast 'as' no soportado para Vector".to_string())
+                }
+            }
         }
     }
 
@@ -329,12 +335,22 @@ impl<'ctx> CodeGenerator<'ctx> {
             ));
         }
 
-        for (param, arg_expr) in decl.param.iter().zip(arg_exprs.iter()) {
+        let ctor_param_names: Vec<String> = if decl.param.is_empty() {
+            analysis
+                .type_shapes
+                .get(type_name)
+                .map(|shape| shape.ctor_param_names.clone())
+                .unwrap_or_else(|| decl.param.iter().map(|param| param.name.clone()).collect())
+        } else {
+            decl.param.iter().map(|param| param.name.clone()).collect()
+        };
+
+        for (param_name, arg_expr) in ctor_param_names.iter().zip(arg_exprs.iter()) {
             let value = self.lower_expr(arg_expr, analysis)?;
-            let slot = self.alloca_for_kind(&value.kind(), &param.name)?;
+            let slot = self.alloca_for_kind(&value.kind(), param_name)?;
             self.store_value(slot, value)?;
             self.insert_var(
-                param.name.clone(),
+                param_name.clone(),
                 VarInfo {
                     ptr: slot,
                     kind: value.kind(),

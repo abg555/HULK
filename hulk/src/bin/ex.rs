@@ -4,9 +4,12 @@ use hulk::code_gen::CodeGenerator;
 use hulk::{parse_program, SemanticAnalyzer};
 
 fn main() {
-    let input = "function math_combo(x: Number): Number => sqrt(x) + sin(90 / 2) + cos(0) + log(2, 8) + exp(0);
-
-math_combo(16)";
+    let input = r#"
+let v = [1, 2, 3] in {
+    v.next();
+    for (x in v) x;
+}
+"#;
 
     let program = match parse_program(input) {
         Ok(program) => program,

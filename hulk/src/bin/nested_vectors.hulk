@@ -1,2 +1,0 @@
-// Example: nested vectors and printing
-let a = [1,2] in print(a);

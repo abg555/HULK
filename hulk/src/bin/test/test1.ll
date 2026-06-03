@@ -1,5 +1,5 @@
-; ModuleID = 'prueba'
-source_filename = "prueba"
+; ModuleID = 'test1'
+source_filename = "test1"
 
 @str = private unnamed_addr constant [3 x i8] c"ok\00", align 1
 @print_fmt_str = private unnamed_addr constant [4 x i8] c"%s\0A\00", align 1
@@ -10,7 +10,7 @@ source_filename = "prueba"
 @str.5 = private unnamed_addr constant [5 x i8] c"fail\00", align 1
 @print_fmt_str.6 = private unnamed_addr constant [4 x i8] c"%s\0A\00", align 1
 
-define double @main() {
+define ptr @main() {
 entry:
   %i = alloca double, align 8
   store double 0.000000e+00, ptr %i, align 8
@@ -68,8 +68,7 @@ if_else11:                                        ; preds = %if_merge
 
 if_merge12:                                       ; preds = %if_else11, %if_then10
   %iftmp_str15 = phi ptr [ @str.3, %if_then10 ], [ @str.5, %if_else11 ]
-  %load_result16 = load double, ptr %result, align 8
-  ret double %load_result16
+  ret ptr %iftmp_str15
 }
 
 declare i32 @printf(ptr, ...)

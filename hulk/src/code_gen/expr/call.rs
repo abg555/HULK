@@ -5,6 +5,7 @@ use inkwell::types::BasicType;
 
 use crate::ast::{BaseCallExpr, CallExpr, KindExpr};
 use crate::semantic::SemanticAnalysis;
+use crate::semantic::symbol_table::SymbolKind;
 use crate::semantic::types::SemanticType;
 
 use super::super::{CodegenValue, CodeGenerator};
@@ -26,9 +27,85 @@ impl<'ctx> CodeGenerator<'ctx> {
                 "rand" => Ok(CodegenValue::Number(self.lower_rand(call)?)),
                 _ => self.lower_user_call(call, analysis, &callee.name),
             },
-            KindExpr::MemberAccess(member) => self.lower_method_call(call, member, analysis),
+            KindExpr::MemberAccess(member) => {
+                if let Some(result) = self.lower_vector_member_call(call, member, analysis)? {
+                    return Ok(result);
+                }
+                if let Some(result) = self.lower_namespace_member_call(call, member, analysis)? {
+                    return Ok(result);
+                }
+                self.lower_method_call(call, member, analysis)
+            }
             _ => Err("Solo se soportan llamadas a funciones o metodos".to_string()),
         }
+    }
+
+    fn lower_namespace_member_call(
+        &mut self,
+        call: &CallExpr,
+        member: &crate::ast::MemberAccessExpr,
+        analysis: &SemanticAnalysis,
+    ) -> Result<Option<CodegenValue<'ctx>>, String> {
+        let Some(SemanticType::Custom(namespace_name)) = analysis.inferred_types.get(&member.object.id) else {
+            return Ok(None);
+        };
+
+        let is_namespace = analysis
+            .global_symbols
+            .get(namespace_name)
+            .is_some_and(|symbol| symbol.kind == SymbolKind::Namespace);
+        if !is_namespace {
+            return Ok(None);
+        }
+
+        let Some(info) = self.get_function(&member.field).cloned() else {
+            return Err(format!(
+                "Miembro importado no disponible en codegen: {}.{}",
+                namespace_name, member.field
+            ));
+        };
+
+        if call.arguments.len() != info.params.len() {
+            return Err(format!(
+                "Aridad invalida en llamada importada a {}.{}",
+                namespace_name, member.field
+            ));
+        }
+
+        let mut args = Vec::with_capacity(call.arguments.len());
+        for (idx, arg_expr) in call.arguments.iter().enumerate() {
+            let value = self.lower_expr(arg_expr, analysis)?;
+            let arg = match info.params[idx] {
+                super::super::ValueKind::Number => value.into_number()?.into(),
+                super::super::ValueKind::Bool => value.into_bool()?.into(),
+                super::super::ValueKind::String => value.into_string()?.into(),
+                super::super::ValueKind::Object => value.into_object()?.into(),
+                super::super::ValueKind::Vector => value.into_vector()?.into(),
+            };
+            args.push(arg);
+        }
+
+        let call_value = self
+            .builder
+            .build_call(
+                info.function,
+                &args,
+                &format!("call_import_{}_{}", namespace_name, member.field),
+            )
+            .map_err(|e| e.to_string())?
+            .try_as_basic_value()
+            .left()
+            .ok_or_else(|| "La llamada importada no devolvio valor".to_string())?;
+
+        let result = match info.ret {
+            super::super::ValueKind::Number => CodegenValue::Number(call_value.into_float_value()),
+            super::super::ValueKind::Bool => CodegenValue::Bool(call_value.into_int_value()),
+            super::super::ValueKind::String => CodegenValue::String(call_value.into_pointer_value()),
+            super::super::ValueKind::Object => CodegenValue::Object(call_value.into_pointer_value()),
+            super::super::ValueKind::Vector => CodegenValue::Vector(call_value.into_pointer_value()),
+        };
+
+        Ok(Some(result))
     }
 
     pub(super) fn lower_base_call(
@@ -86,9 +163,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                 super::super::ValueKind::Bool => value.into_bool()?.into(),
                 super::super::ValueKind::String => value.into_string()?.into(),
                 super::super::ValueKind::Object => value.into_object()?.into(),
-                super::super::ValueKind::Vector => {
-                    return Err("Vector no soportado aun en llamadas".to_string())
-                }
+                super::super::ValueKind::Vector => value.into_vector()?.into(),
             };
             args.push(arg);
         }
@@ -107,7 +182,7 @@ impl<'ctx> CodeGenerator<'ctx> {
             super::super::ValueKind::Bool => Ok(CodegenValue::Bool(value.into_int_value())),
             super::super::ValueKind::String => Ok(CodegenValue::String(value.into_pointer_value())),
             super::super::ValueKind::Object => Ok(CodegenValue::Object(value.into_pointer_value())),
-            super::super::ValueKind::Vector => Err("Vector no soportado aun en llamadas".to_string()),
+            super::super::ValueKind::Vector => Ok(CodegenValue::Vector(value.into_pointer_value())),
         }
     }
 
@@ -178,9 +253,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                 super::super::ValueKind::Bool => value.into_bool()?.into(),
                 super::super::ValueKind::String => value.into_string()?.into(),
                 super::super::ValueKind::Object => value.into_object()?.into(),
-                super::super::ValueKind::Vector => {
-                    return Err("Vector no soportado aun en llamadas".to_string())
-                }
+                super::super::ValueKind::Vector => value.into_vector()?.into(),
             };
             args.push(arg);
         }
@@ -199,7 +272,7 @@ impl<'ctx> CodeGenerator<'ctx> {
             super::super::ValueKind::Bool => Ok(CodegenValue::Bool(value.into_int_value())),
             super::super::ValueKind::String => Ok(CodegenValue::String(value.into_pointer_value())),
             super::super::ValueKind::Object => Ok(CodegenValue::Object(value.into_pointer_value())),
-            super::super::ValueKind::Vector => Err("Vector no soportado aun en llamadas".to_string()),
+            super::super::ValueKind::Vector => Ok(CodegenValue::Vector(value.into_pointer_value())),
         }
     }
 
@@ -272,9 +345,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                 super::super::ValueKind::Bool => value.into_bool()?.into(),
                 super::super::ValueKind::String => value.into_string()?.into(),
                 super::super::ValueKind::Object => value.into_object()?.into(),
-                super::super::ValueKind::Vector => {
-                    return Err("Vectores no soportados aun en llamadas".to_string())
-                }
+                super::super::ValueKind::Vector => value.into_vector()?.into(),
             };
             args.push(arg);
         }
@@ -302,8 +373,287 @@ impl<'ctx> CodeGenerator<'ctx> {
             super::super::ValueKind::Bool => Ok(CodegenValue::Bool(value.into_int_value())),
             super::super::ValueKind::String => Ok(CodegenValue::String(value.into_pointer_value())),
             super::super::ValueKind::Object => Ok(CodegenValue::Object(value.into_pointer_value())),
-            super::super::ValueKind::Vector => Err("Vectores no soportados aun en llamadas".to_string()),
+            super::super::ValueKind::Vector => Ok(CodegenValue::Vector(value.into_pointer_value())),
         }
+    }
+
+    fn lower_vector_member_call(
+        &mut self,
+        call: &CallExpr,
+        member: &crate::ast::MemberAccessExpr,
+        analysis: &SemanticAnalysis,
+    ) -> Result<Option<CodegenValue<'ctx>>, String> {
+        let Some(SemanticType::Vector(inner)) = analysis.inferred_types.get(&member.object.id) else {
+            return Ok(None);
+        };
+        let element_type = *inner.clone();
+
+        match member.field.as_str() {
+            "size" => {
+                if !call.arguments.is_empty() {
+                    return Err("size() no recibe argumentos".to_string());
+                }
+                let vec_ptr = self.lower_expr(&member.object, analysis)?.into_vector()?;
+                let len_slot = self
+                    .builder
+                    .build_struct_gep(self.vector_struct, vec_ptr, 0, "vec_len_slot")
+                    .map_err(|e| e.to_string())?;
+                let len_val = self
+                    .builder
+                    .build_load(self.context.i64_type(), len_slot, "vec_len")
+                    .map_err(|e| e.to_string())?
+                    .into_int_value();
+                let len_f64 = self
+                    .builder
+                    .build_unsigned_int_to_float(len_val, self.f64_type, "vec_len_f64")
+                    .map_err(|e| e.to_string())?;
+                Ok(Some(CodegenValue::Number(len_f64)))
+            }
+            "next" => {
+                if !call.arguments.is_empty() {
+                    return Err("next() no recibe argumentos".to_string());
+                }
+                let vec_ptr = self.lower_expr(&member.object, analysis)?.into_vector()?;
+                let has_next = self.vector_next(vec_ptr)?;
+                Ok(Some(CodegenValue::Bool(has_next)))
+            }
+            "current" => {
+                if !call.arguments.is_empty() {
+                    return Err("current() no recibe argumentos".to_string());
+                }
+                let vec_ptr = self.lower_expr(&member.object, analysis)?.into_vector()?;
+
+                Ok(Some(self.vector_current(vec_ptr, &element_type)?))
+            }
+            other => Err(format!("Vector no soporta el miembro {}", other)),
+        }
+    }
+
+    pub(super) fn vector_next(
+        &mut self,
+        vec_ptr: PointerValue<'ctx>,
+    ) -> Result<inkwell::values::IntValue<'ctx>, String> {
+        let len_slot = self
+            .builder
+            .build_struct_gep(self.vector_struct, vec_ptr, 0, "vec_len_slot")
+            .map_err(|e| e.to_string())?;
+        let len_val = self
+            .builder
+            .build_load(self.context.i64_type(), len_slot, "vec_len")
+            .map_err(|e| e.to_string())?
+            .into_int_value();
+
+        let cursor_slot = self
+            .builder
+            .build_struct_gep(self.vector_struct, vec_ptr, 2, "vec_cursor_slot")
+            .map_err(|e| e.to_string())?;
+        let cursor_val = self
+            .builder
+            .build_load(self.context.i64_type(), cursor_slot, "vec_cursor")
+            .map_err(|e| e.to_string())?
+            .into_int_value();
+        let next_cursor = self
+            .builder
+            .build_int_add(
+                cursor_val,
+                self.context.i64_type().const_int(1, false),
+                "vec_next_cursor",
+            )
+            .map_err(|e| e.to_string())?;
+        let has_next = self
+            .builder
+            .build_int_compare(IntPredicate::ULT, next_cursor, len_val, "vec_has_next")
+            .map_err(|e| e.to_string())?;
+
+        let function = self
+            .builder
+            .get_insert_block()
+            .and_then(|block| block.get_parent())
+            .ok_or_else(|| "No se pudo determinar la funcion actual para next(vector)".to_string())?;
+        let has_next_block = self.context.append_basic_block(function, "vec_next_true");
+        let no_next_block = self.context.append_basic_block(function, "vec_next_false");
+        let cont_block = self.context.append_basic_block(function, "vec_next_cont");
+        self.builder
+            .build_conditional_branch(has_next, has_next_block, no_next_block)
+            .map_err(|e| e.to_string())?;
+
+        self.builder.position_at_end(has_next_block);
+        self.builder
+            .build_store(cursor_slot, next_cursor)
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_unconditional_branch(cont_block)
+            .map_err(|e| e.to_string())?;
+
+        self.builder.position_at_end(no_next_block);
+        self.builder
+            .build_store(cursor_slot, len_val)
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_unconditional_branch(cont_block)
+            .map_err(|e| e.to_string())?;
+
+        self.builder.position_at_end(cont_block);
+        Ok(has_next)
+    }
+
+    pub(super) fn vector_current(
+        &mut self,
+        vec_ptr: PointerValue<'ctx>,
+        element_type: &SemanticType,
+    ) -> Result<CodegenValue<'ctx>, String> {
+        let len_slot = self
+            .builder
+            .build_struct_gep(self.vector_struct, vec_ptr, 0, "vec_len_slot")
+            .map_err(|e| e.to_string())?;
+        let len_val = self
+            .builder
+            .build_load(self.context.i64_type(), len_slot, "vec_len")
+            .map_err(|e| e.to_string())?
+            .into_int_value();
+
+        let cursor_slot = self
+            .builder
+            .build_struct_gep(self.vector_struct, vec_ptr, 2, "vec_cursor_slot")
+            .map_err(|e| e.to_string())?;
+        let cursor_val = self
+            .builder
+            .build_load(self.context.i64_type(), cursor_slot, "vec_cursor")
+            .map_err(|e| e.to_string())?
+            .into_int_value();
+
+        let has_current = self
+            .builder
+            .build_int_compare(IntPredicate::ULT, cursor_val, len_val, "vec_has_current")
+            .map_err(|e| e.to_string())?;
+
+        let function = self
+            .builder
+            .get_insert_block()
+            .and_then(|block| block.get_parent())
+            .ok_or_else(|| "No se pudo determinar la funcion actual para current(vector)".to_string())?;
+        let ok_block = self.context.append_basic_block(function, "vec_current_ok");
+        let fail_block = self.context.append_basic_block(function, "vec_current_fail");
+        self.builder
+            .build_conditional_branch(has_current, ok_block, fail_block)
+            .map_err(|e| e.to_string())?;
+
+        self.builder.position_at_end(fail_block);
+        let panic_fn = self.get_panic_function();
+        let msg_name = self.fresh_tmp("vec_current_panic_msg");
+        let msg = self
+            .builder
+            .build_global_string_ptr(
+                "Runtime error: current() sobre vector vacio",
+                &msg_name,
+            )
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_call(panic_fn, &[msg.as_pointer_value().into()], "vec_current_panic")
+            .map_err(|e| e.to_string())?;
+        self.builder.build_unreachable().map_err(|e| e.to_string())?;
+
+        self.builder.position_at_end(ok_block);
+
+        let data_slot = self
+            .builder
+            .build_struct_gep(self.vector_struct, vec_ptr, 1, "vec_data_slot")
+            .map_err(|e| e.to_string())?;
+        let data_i8 = self
+            .builder
+            .build_load(
+                self.context.i8_type().ptr_type(AddressSpace::default()),
+                data_slot,
+                "vec_data_ptr",
+            )
+            .map_err(|e| e.to_string())?
+            .into_pointer_value();
+
+        let elem_basic = self.basic_type_for_semantic(element_type)?;
+        let elem_size = elem_basic
+            .size_of()
+            .ok_or_else(|| "No se pudo calcular tamano del elemento".to_string())?;
+        let elem_size_i64 = self
+            .builder
+            .build_int_cast(elem_size, self.context.i64_type(), "vec_current_elem_size")
+            .map_err(|e| e.to_string())?;
+        let elem_ptr_type = match elem_basic {
+            inkwell::types::BasicTypeEnum::FloatType(ft) => ft.ptr_type(AddressSpace::default()),
+            inkwell::types::BasicTypeEnum::IntType(it) => it.ptr_type(AddressSpace::default()),
+            inkwell::types::BasicTypeEnum::PointerType(pt) => {
+                pt.ptr_type(AddressSpace::default())
+            }
+            inkwell::types::BasicTypeEnum::StructType(st) => st.ptr_type(AddressSpace::default()),
+            inkwell::types::BasicTypeEnum::ArrayType(at) => at.ptr_type(AddressSpace::default()),
+            inkwell::types::BasicTypeEnum::VectorType(vt) => vt.ptr_type(AddressSpace::default()),
+        };
+
+        let byte_offset = self
+            .builder
+            .build_int_mul(cursor_val, elem_size_i64, "vec_current_byte_offset")
+            .map_err(|e| e.to_string())?;
+        let elem_i8_ptr = unsafe {
+            self.builder
+                .build_in_bounds_gep(
+                    self.context.i8_type(),
+                    data_i8,
+                    &[byte_offset],
+                    "vec_current_elem_i8",
+                )
+                .map_err(|e| e.to_string())?
+        };
+        let elem_ptr = self
+            .builder
+            .build_pointer_cast(elem_i8_ptr, elem_ptr_type, "vec_current_ptr")
+            .map_err(|e| e.to_string())?;
+
+        let elem_kind = self.value_kind_from_semantic(element_type)?;
+        let current_value = match elem_kind {
+            super::super::ValueKind::Number => CodegenValue::Number(
+                self.builder
+                    .build_load(self.f64_type, elem_ptr, "vec_current_num")
+                    .map_err(|e| e.to_string())?
+                    .into_float_value(),
+            ),
+            super::super::ValueKind::Bool => CodegenValue::Bool(
+                self.builder
+                    .build_load(self.bool_type, elem_ptr, "vec_current_bool")
+                    .map_err(|e| e.to_string())?
+                    .into_int_value(),
+            ),
+            super::super::ValueKind::String => CodegenValue::String(
+                self.builder
+                    .build_load(
+                        self.context.i8_type().ptr_type(AddressSpace::default()),
+                        elem_ptr,
+                        "vec_current_str",
+                    )
+                    .map_err(|e| e.to_string())?
+                    .into_pointer_value(),
+            ),
+            super::super::ValueKind::Object => CodegenValue::Object(
+                self.builder
+                    .build_load(
+                        self.context.i8_type().ptr_type(AddressSpace::default()),
+                        elem_ptr,
+                        "vec_current_obj",
+                    )
+                    .map_err(|e| e.to_string())?
+                    .into_pointer_value(),
+            ),
+            super::super::ValueKind::Vector => CodegenValue::Vector(
+                self.builder
+                    .build_load(
+                        self.vector_struct.ptr_type(AddressSpace::default()),
+                        elem_ptr,
+                        "vec_current_vec",
+                    )
+                    .map_err(|e| e.to_string())?
+                    .into_pointer_value(),
+            ),
+        };
+
+        Ok(current_value)
     }
 
     fn lower_print(
