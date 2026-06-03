@@ -1901,3 +1901,48 @@ type PolarPoint2(phi: Number, rho: Number) inherits Point(rho * sin(phi), rho * 
         result.err()
     );
 }
+#[test]
+fn accepts_print_returning_argument_type() {
+    // Prueba positiva: print(42) debe devolver Number, por lo que sumarle 1 es válido.
+    let input = "let x = print(42) in x + 1";
+
+    let result = analyze_program(input);
+    assert!(
+        result.is_ok(),
+        "expected print to return Number and be usable in arithmetic, got: {result:?}"
+    );
+}
+
+#[test]
+fn rejects_print_number_used_as_string() {
+    // Prueba negativa: Si print(42) devolviera Unknown, el compilador lo aceptaría.
+    // Como ahora devuelve Number estrictamente, intentar asignarlo a String debe fallar.
+    let input = "let s: String = print(42) in s";
+
+    let diagnostics = analyze_program(input).expect_err("expected type mismatch error");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.message.contains("incompatible") 
+                && d.message.contains("String") 
+                && d.message.contains("Number")),
+        "expected Number/String mismatch diagnostic, got: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn rejects_print_boolean_used_in_arithmetic() {
+    // Prueba negativa: Verifica que print propague tipos distintos a Number correctamente.
+    // print(true) debe devolver Boolean, por lo que la suma aritmética debe fallar.
+    let input = "print(true) + 1";
+
+    let diagnostics = analyze_program(input).expect_err("expected type mismatch error");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.message.contains("incompatible") 
+                && d.message.contains("Number") 
+                && d.message.contains("Boolean")),
+        "expected Boolean/Number mismatch diagnostic, got: {diagnostics:?}"
+    );
+}
