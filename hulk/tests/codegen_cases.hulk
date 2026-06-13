@@ -190,29 +190,35 @@ let v = [1, 2] in v as Number[];
 // expect: @printf
 print([1, 2, 3])
 
+// example: vector_while_dead_loop
 let i = 10 in
 while (i < 0) {
     i := i + 1;
     [1,2]
 }
 
+// example: nested_vector_size
 let v = [[1,2], [3,4], [5,6]] in
 v.size()
 
+// example: box_type_set_get
 type Box {
     items: Number[] = [1];
 
     set(v: Number[]): Number[] => {
         self.items := v;
         self.items
-    }
+    };
 
     get(): Number[] => self.items;
 }
 
-let b = new Box() in
-b.set([7,8]) + b.get()
+let b = new Box() in {
+    b.set([7,8]);
+    b.get()
+}
 
+// example: type_a_self_call
 type A {
     f(): Number => 1;
     g(): Number => self.f() + 1;
@@ -221,6 +227,7 @@ type A {
 let a = new A() in
 a.g()
 
+// example: vector_param_hof
 function f(x: Number[], y: Number[]): Number[] => y;
 
 f(
@@ -228,7 +235,7 @@ f(
     (let b = [2] in b)
 )
 
-
+// example: type_a_vector_return
 type A {
     f(): Number[] => [1,2];
 }
@@ -236,16 +243,18 @@ type A {
 let a = new A() in
 a.f().size()
 
+// example: vector_double_cast
 let v = [1,2,3] in
 (v as Number[]) as Number[]
 
+// example: accumulator_while
 type Acc {
     v: Number[] = [1];
 
     add(x: Number): Number[] => {
         self.v := [x];
         self.v
-    }
+    };
 }
 
 let a = new Acc() in

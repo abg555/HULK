@@ -9,14 +9,14 @@
 
 // ----------------------------------Semanticos-----------------------------------------------------------------
 
-// // type mismatch 
-// function add(x: Number, y: Number): Number {
-//     x + y;
-// }
+// type mismatch 
+function add(x: Number, y: Number): Number {
+    x + y;
+}
 
-// {
-//     add("hello", 5);
-// };
+{
+    add("hello", 5);
+};
 
 // // undeclared var
 // let x = 5 in print(y);

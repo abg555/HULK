@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use inkwell::context::Context;
 use std::process::Command;
 use hulk::code_gen::CodeGenerator;
-use hulk::{parse_program, SemanticAnalyzer};
+use hulk::{functor_desugar, parse_program, SemanticAnalyzer};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -109,14 +109,13 @@ fn main() {
         }
     };
 
-    // Fase 2: Análisis semántico
-    let analysis = match SemanticAnalyzer::new().analyze(&program) {
-        Ok(analysis) => {
+    // Fase 2: Análisis semántico inicial (sobre el programa original)
+    let initial_context = match SemanticAnalyzer::new().analyze(&program) {
+        Ok(ctx) => {
             if verbose {
-                println!("✓ Análisis semántico exitoso");
-                println!("Tipos inferidos: {}", analysis.inferred_types.len());
+                println!("✓ Análisis semántico inicial exitoso");
             }
-            analysis
+            ctx
         }
         Err(diagnostics) => {
             eprintln!("Error en análisis semántico:");
@@ -127,9 +126,34 @@ fn main() {
         }
     };
 
+    // Fase 2b: Desazucarado de functores (convierte lambdas y tipos función a protocolos/wrappers)
+    let program = functor_desugar::desugar_program(program, &initial_context);
+
+    // Fase 2c: Re-análisis semántico sobre el programa desazucarado
+    let analysis = match SemanticAnalyzer::new().analyze(&program) {
+        Ok(analysis) => {
+            if verbose {
+                println!("✓ Análisis semántico post-desugar exitoso");
+                println!("Tipos inferidos: {}", analysis.inferred_types.len());
+            }
+            analysis
+        }
+        Err(diagnostics) => {
+            eprintln!("Error en análisis semántico (post-desugar):");
+            for diagnostic in diagnostics {
+                eprintln!("  {}", diagnostic.message);
+            }
+            std::process::exit(1);
+        }
+    };
+
     // Fase 3: Generación de código LLVM IR
     let context = Context::create();
-    let mut codegen = CodeGenerator::new(&context, input_path.file_stem().unwrap_or_default().to_string_lossy().as_ref());
+    let mut codegen = CodeGenerator::with_source_dir(
+        &context,
+        input_path.file_stem().unwrap_or_default().to_string_lossy().as_ref(),
+        input_path,
+    );
 
     if let Err(message) = codegen.codegen_program(&program, &analysis) {
         eprintln!("Error en generación de código: {}", message);

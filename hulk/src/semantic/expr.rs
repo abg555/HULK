@@ -709,7 +709,7 @@ impl SemanticAnalyzer {
 
     /// Valida una expresion `if`, incluyendo ramas `elif` y `else`.
     fn check_if_expr(&mut self, if_expr: &IfExpr, span: Span) -> SemanticType {
-        //self.report_unreachable_if_branches(if_expr, span);
+        self.report_unreachable_if_branches(if_expr, span);
 
         let state_before_if = self.assigned_scopes.clone();
         self.assigned_scopes = state_before_if.clone();

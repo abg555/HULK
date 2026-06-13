@@ -34,6 +34,30 @@ impl<'ctx> CodeGenerator<'ctx> {
                 if let Some(result) = self.lower_namespace_member_call(call, member, analysis)? {
                     return Ok(result);
                 }
+                // If the callee is a function-typed field (not a virtual method), call it as
+                // a raw function pointer instead of going through vtable dispatch.
+                let is_fn_field = analysis
+                    .inferred_types
+                    .get(&member.object.id)
+                    .and_then(|ty| {
+                        if let SemanticType::Custom(type_name) = ty {
+                            analysis.type_shapes.get(type_name.as_str())
+                        } else {
+                            None
+                        }
+                    })
+                    .map(|shape| {
+                        shape.fields.contains_key(&member.field)
+                            && !shape.methods.contains_key(&member.field)
+                    })
+                    .unwrap_or(false);
+                if is_fn_field {
+                    if let Some(SemanticType::Function(params, ret)) =
+                        analysis.inferred_types.get(&call.callee.id).cloned()
+                    {
+                        return self.lower_function_ptr_call(call, &params, &*ret, analysis);
+                    }
+                }
                 self.lower_method_call(call, member, analysis)
             }
             _ => Err("Solo se soportan llamadas a funciones o metodos".to_string()),
@@ -276,6 +300,107 @@ impl<'ctx> CodeGenerator<'ctx> {
         }
     }
 
+    fn resolve_vtable_layout_type(
+        &self,
+        type_name: &str,
+        method_name: &str,
+        analysis: &SemanticAnalysis,
+    ) -> Result<String, String> {
+        if self.type_decls.contains_key(type_name) {
+            return Ok(type_name.to_string());
+        }
+        if analysis.protocol_shapes.contains_key(type_name) {
+            // Protocol type: find a concrete implementing type for vtable layout.
+            // Use sorted order for determinism; any implementor is valid when the
+            // method slot is consistent (e.g. functor wrappers with no parent).
+            let mut candidates: Vec<&String> = self
+                .type_decls
+                .keys()
+                .filter(|t| {
+                    analysis
+                        .type_shapes
+                        .get(t.as_str())
+                        .map(|s| s.methods.contains_key(method_name))
+                        .unwrap_or(false)
+                })
+                .collect();
+            candidates.sort();
+            return candidates
+                .into_iter()
+                .next()
+                .map(|t| t.to_string())
+                .ok_or_else(|| {
+                    format!(
+                        "No se encontro implementacion concreta del protocolo {} con metodo {}",
+                        type_name, method_name
+                    )
+                });
+        }
+        Err(format!("Tipo no definido: {}", type_name))
+    }
+
+    fn lower_function_ptr_call(
+        &mut self,
+        call: &CallExpr,
+        params: &[crate::semantic::types::SemanticType],
+        ret: &crate::semantic::types::SemanticType,
+        analysis: &SemanticAnalysis,
+    ) -> Result<CodegenValue<'ctx>, String> {
+        let fn_ptr = self.lower_expr(&call.callee, analysis)?.into_object()?;
+
+        let param_kinds: Vec<super::super::ValueKind> = params
+            .iter()
+            .map(|p| self.value_kind_from_semantic(p))
+            .collect::<Result<_, _>>()?;
+        let ret_kind = self.value_kind_from_semantic(ret)?;
+        let fn_type = self.fn_type_for_signature(&param_kinds, ret_kind);
+
+        if call.arguments.len() != params.len() {
+            return Err(format!(
+                "Aridad invalida en llamada indirecta: esperaba {} argumentos",
+                params.len()
+            ));
+        }
+
+        let mut args = Vec::with_capacity(params.len());
+        for (idx, arg_expr) in call.arguments.iter().enumerate() {
+            let value = self.lower_expr(arg_expr, analysis)?;
+            let arg = match param_kinds[idx] {
+                super::super::ValueKind::Number => value.into_number()?.into(),
+                super::super::ValueKind::Bool => value.into_bool()?.into(),
+                super::super::ValueKind::String => value.into_string()?.into(),
+                super::super::ValueKind::Object => value.into_object()?.into(),
+                super::super::ValueKind::Vector => value.into_vector()?.into(),
+            };
+            args.push(arg);
+        }
+
+        let fn_ptr_typed = self
+            .builder
+            .build_pointer_cast(
+                fn_ptr,
+                fn_type.ptr_type(AddressSpace::default()),
+                "fn_ptr_cast",
+            )
+            .map_err(|e| e.to_string())?;
+        let call_result = self
+            .builder
+            .build_indirect_call(fn_type, fn_ptr_typed, &args, "indirect_fn_call")
+            .map_err(|e| e.to_string())?;
+        let value = call_result
+            .try_as_basic_value()
+            .left()
+            .ok_or_else(|| "La llamada no devolvio un valor".to_string())?;
+
+        match ret_kind {
+            super::super::ValueKind::Number => Ok(CodegenValue::Number(value.into_float_value())),
+            super::super::ValueKind::Bool => Ok(CodegenValue::Bool(value.into_int_value())),
+            super::super::ValueKind::String => Ok(CodegenValue::String(value.into_pointer_value())),
+            super::super::ValueKind::Object => Ok(CodegenValue::Object(value.into_pointer_value())),
+            super::super::ValueKind::Vector => Ok(CodegenValue::Vector(value.into_pointer_value())),
+        }
+    }
+
     fn lower_method_call(
         &mut self,
         call: &CallExpr,
@@ -283,7 +408,13 @@ impl<'ctx> CodeGenerator<'ctx> {
         analysis: &SemanticAnalysis,
     ) -> Result<CodegenValue<'ctx>, String> {
         let object_type = self.member_object_type(member, analysis)?;
-        let owner_type = self.object_method_owner(&object_type, &member.field, analysis)?;
+
+        // When the static type is a protocol (not a concrete type in type_decls),
+        // find a concrete implementing type to use for vtable layout.
+        let layout_type =
+            self.resolve_vtable_layout_type(&object_type, &member.field, analysis)?;
+
+        let owner_type = self.object_method_owner(&layout_type, &member.field, analysis)?;
         let method_name = self.method_symbol_name(&owner_type, &member.field);
         let Some(info) = self.get_function(&method_name).cloned() else {
             return Err(format!("Metodo no encontrado: {}.{}", owner_type, member.field));
@@ -294,25 +425,40 @@ impl<'ctx> CodeGenerator<'ctx> {
         }
 
         let receiver = self.lower_expr(&member.object, analysis)?.into_object()?;
-        let object_struct = self.object_struct_type(&object_type)?;
-        let typed_ptr = self.cast_object_ptr(&receiver, &object_type)?;
-        let vtable_ptr_slot = self
-            .builder
-            .build_struct_gep(object_struct, typed_ptr, 0, "vtable_ptr")
-            .map_err(|e| e.to_string())?;
-        let vtable_ptr = self
-            .builder
-            .build_load(
-                self.context.i8_type().ptr_type(AddressSpace::default()),
-                vtable_ptr_slot,
-                "vtable_load",
-            )
-            .map_err(|e| e.to_string())?
-            .into_pointer_value();
 
-        let slot = self.method_slot(&object_type, &member.field)? + 1;
-        let order = self.method_order_for_type(&object_type)?;
-        let vtable_type = self.vtable_struct_type(&object_type, &order);
+        // Load vtable pointer: concrete types use a typed struct GEP; protocol types
+        // (raw i8* with no prepared struct) interpret the pointer directly as i8**.
+        let i8_ptr_type = self.context.i8_type().ptr_type(AddressSpace::default());
+        let vtable_ptr = if self.struct_types.contains_key(&object_type) {
+            let object_struct = self.object_struct_type(&object_type)?;
+            let typed_ptr = self.cast_object_ptr(&receiver, &object_type)?;
+            let vtable_ptr_slot = self
+                .builder
+                .build_struct_gep(object_struct, typed_ptr, 0, "vtable_ptr")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_load(i8_ptr_type, vtable_ptr_slot, "vtable_load")
+                .map_err(|e| e.to_string())?
+                .into_pointer_value()
+        } else {
+            // Protocol-typed receiver: vtable pointer is always at offset 0 of any object.
+            let ptr_to_vtable = self
+                .builder
+                .build_pointer_cast(
+                    receiver,
+                    i8_ptr_type.ptr_type(AddressSpace::default()),
+                    "vtable_ptr_ptr",
+                )
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_load(i8_ptr_type, ptr_to_vtable, "vtable_load")
+                .map_err(|e| e.to_string())?
+                .into_pointer_value()
+        };
+
+        let slot = self.method_slot(&layout_type, &member.field)? + 1;
+        let order = self.method_order_for_type(&layout_type)?;
+        let vtable_type = self.vtable_struct_type(&layout_type, &order);
         let vtable_typed = self
             .builder
             .build_pointer_cast(

@@ -2,10 +2,12 @@ mod binary;
 mod block;
 mod call;
 mod if_else;
+mod lambda;
 mod let_assign;
 mod literals;
 mod loops;
 mod macros;
+mod match_expr;
 mod objects;
 mod arrays;
 mod unary;
@@ -37,6 +39,8 @@ impl<'ctx> CodeGenerator<'ctx> {
             KindExpr::Call(call) => self.lower_call(call, analysis),
             KindExpr::MacroCall(call) => self.lower_macro_call(call, analysis),
             KindExpr::BaseCall(call) => self.lower_base_call(call, analysis),
+            KindExpr::Lambda(lambda) => self.lower_lambda(lambda, analysis),
+            KindExpr::Match(match_expr) => self.lower_match(match_expr, analysis),
             KindExpr::New(new_expr) => self.lower_new(new_expr, analysis),
             KindExpr::MemberAccess(member) => self.lower_member_access(member, analysis),
             KindExpr::If(if_expr) => self.lower_if(if_expr, analysis),
@@ -47,7 +51,6 @@ impl<'ctx> CodeGenerator<'ctx> {
             KindExpr::Array(array_expr) => self.lower_array(expr, array_expr, analysis),
             KindExpr::Index(index_expr) => self.lower_index(index_expr, analysis),
             KindExpr::ArrayComprehension(comp) => self.lower_array_comprehension(comp, analysis),
-            _ => Err("Solo se soportan literales, booleanos y expresiones basicas".to_string()),
         }
     }
 }
