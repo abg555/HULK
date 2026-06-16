@@ -97,13 +97,30 @@ fn main() -> io::Result<()> {
     };
 
     // =========================
-    // 3. SEMANTIC (Inicial)
+    // 3. MACRO EXPANSION
+    // =========================
+    println!("=== MACRO EXPAND ===");
+
+   let expanded_ast = match semantic::macro_expander::expand_program(program_ast) {
+        Ok(ast) => ast,
+        Err(diagnostics) => {
+            eprintln!("(1,1) SEMANTIC: Error expandiendo macros:");
+            for d in diagnostics {
+                eprintln!("  - {:?}", d);
+            }
+            process::exit(3);
+        }
+    };
+
+    // =========================
+    // 4. SEMANTIC
     // =========================
     println!("=== SEMANTIC ===");
 
     let mut analyzer = semantic::SemanticAnalyzer::new();
 
-    let initial_context = match analyzer.analyze(&program_ast) {
+
+    let initial_context = match analyzer.analyze(&expanded_ast) {
         Ok(ctx) => ctx,
         Err(diagnostics) => {
             eprintln!("(1,1) SEMANTIC: Se encontraron errores semánticos:");
@@ -115,14 +132,14 @@ fn main() -> io::Result<()> {
     };
 
     // ===================================================
-    // 3b. DESAZUCARADO
+    // 4b. DESAZUCARADO
     // ===================================================
     println!("=== DESUGAR ===");
     // Usamos la referencia directa al submódulo que importamos con el 'use'
-    let program_desugared = functor_desugar::desugar_program(program_ast, &initial_context);
+    let program_desugared = functor_desugar::desugar_program(expanded_ast, &initial_context);
 
     // ===================================================
-    // 3c. RE-ANÁLISIS SEMÁNTICO (Post-Desugar)
+    // 4c. RE-ANÁLISIS SEMÁNTICO (Post-Desugar)
     // ===================================================
     let mut post_analyzer = semantic::SemanticAnalyzer::new();
     let semantic_context = match post_analyzer.analyze(&program_desugared) {
@@ -140,7 +157,7 @@ fn main() -> io::Result<()> {
     };
 
     // =========================
-    // 4. CODEGEN LLVM
+    // 5. CODEGEN LLVM
     // =========================
     println!("=== CODEGEN ===");
 
@@ -162,7 +179,7 @@ fn main() -> io::Result<()> {
     }
 
     // =========================
-    // 5. GENERAR OUTPUT REAL (LLVM -> object -> binary)
+    // 6. GENERAR OUTPUT REAL (LLVM -> object -> binary)
     // =========================
 
     let triple = TargetMachine::get_default_triple();

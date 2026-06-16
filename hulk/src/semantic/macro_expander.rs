@@ -79,7 +79,16 @@ impl MacroExpander {
                 }
                 Item::Type(typ)
             }
-            Item::Macro(macr) => Item::Macro(macr),
+            Item::Macro(mut macr) => {
+                macr.body = self.expand_expr(
+                    &macr.body,
+                    &HashMap::new(),
+                    &[],
+                    &mut Vec::new(),
+                    false,
+                );
+                Item::Macro(macr)
+            }
             Item::Protocol(proto) => Item::Protocol(proto),
             Item::GlobalExpr(expr) => Item::GlobalExpr(self.expand_expr(
                 &expr,
