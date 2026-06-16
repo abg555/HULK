@@ -38,6 +38,8 @@ pub struct CodeGenerator<'ctx> {
     type_ids: HashMap<String, u64>,
     method_orders: HashMap<String, Vec<String>>,
     vector_struct: StructType<'ctx>,
+    closure_struct: StructType<'ctx>,
+    thunk_functions: HashMap<String, inkwell::values::FunctionValue<'ctx>>,
     current_type: Option<String>,
     current_method: Option<String>,
 }
@@ -56,6 +58,7 @@ pub enum ValueKind {
     String,
     Object,
     Vector,
+    Closure,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -65,6 +68,7 @@ pub enum CodegenValue<'ctx> {
     String(PointerValue<'ctx>),
     Object(PointerValue<'ctx>),
     Vector(PointerValue<'ctx>),
+    Closure(PointerValue<'ctx>),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -81,6 +85,7 @@ impl<'ctx> CodegenValue<'ctx> {
             CodegenValue::String(_) => ValueKind::String,
             CodegenValue::Object(_) => ValueKind::Object,
             CodegenValue::Vector(_) => ValueKind::Vector,
+            CodegenValue::Closure(_) => ValueKind::Closure,
         }
     }
 
@@ -118,6 +123,13 @@ impl<'ctx> CodegenValue<'ctx> {
             _ => Err("Se esperaba Vector".to_string()),
         }
     }
+
+    pub fn into_closure(self) -> Result<PointerValue<'ctx>, String> {
+        match self {
+            CodegenValue::Closure(value) => Ok(value),
+            _ => Err("Se esperaba un valor funcion (closure)".to_string()),
+        }
+    }
 }
 
 impl<'ctx> CodeGenerator<'ctx> {
@@ -133,6 +145,9 @@ impl<'ctx> CodeGenerator<'ctx> {
             ],
             false,
         );
+
+        let i8_ptr_type = context.i8_type().ptr_type(inkwell::AddressSpace::default());
+        let closure_struct = context.struct_type(&[i8_ptr_type.into(), i8_ptr_type.into()], false);
 
         Self {
             context,
@@ -150,6 +165,8 @@ impl<'ctx> CodeGenerator<'ctx> {
             type_ids: HashMap::new(),
             method_orders: HashMap::new(),
             vector_struct,
+            closure_struct,
+            thunk_functions: HashMap::new(),
             current_type: None,
             current_method: None,
         }
@@ -217,7 +234,8 @@ impl<'ctx> CodeGenerator<'ctx> {
                 }
                 CodegenValue::String(string)
                 | CodegenValue::Object(string)
-                | CodegenValue::Vector(string) => {
+                | CodegenValue::Vector(string)
+                | CodegenValue::Closure(string) => {
                     self.builder
                         .build_return(Some(&string))
                         .map_err(|e| e.to_string())?;
@@ -561,6 +579,7 @@ impl<'ctx> CodeGenerator<'ctx> {
             SemanticType::String => Ok(ValueKind::String),
             SemanticType::Custom(_) => Ok(ValueKind::Object),
             SemanticType::Vector(_) => Ok(ValueKind::Vector),
+            SemanticType::Function(_, _) => Ok(ValueKind::Closure),
             _ => Err(format!("Tipo no soportado en codegen: {:?} -> {}", expr.id, kind)),
         }
     }
@@ -588,6 +607,11 @@ impl<'ctx> CodeGenerator<'ctx> {
                     .ptr_type(inkwell::AddressSpace::default())
                     .const_null(),
             )),
+            ValueKind::Closure => Ok(CodegenValue::Closure(
+                self.closure_struct
+                    .ptr_type(inkwell::AddressSpace::default())
+                    .const_null(),
+            )),
         }
     }
 
@@ -606,6 +630,11 @@ impl<'ctx> CodeGenerator<'ctx> {
             ),
             ValueKind::Vector => Ok(
                 self.vector_struct
+                    .ptr_type(inkwell::AddressSpace::default())
+                    .into(),
+            ),
+            ValueKind::Closure => Ok(
+                self.closure_struct
                     .ptr_type(inkwell::AddressSpace::default())
                     .into(),
             ),
@@ -633,6 +662,11 @@ impl<'ctx> CodeGenerator<'ctx> {
             ),
             SemanticType::Vector(_) => Ok(
                 self.vector_struct
+                    .ptr_type(inkwell::AddressSpace::default())
+                    .into(),
+            ),
+            SemanticType::Function(_, _) => Ok(
+                self.closure_struct
                     .ptr_type(inkwell::AddressSpace::default())
                     .into(),
             ),
@@ -812,6 +846,17 @@ impl<'ctx> CodeGenerator<'ctx> {
                         .into_pointer_value(),
                 ))
             }
+            ValueKind::Closure => {
+                let closure_ptr_type = self
+                    .closure_struct
+                    .ptr_type(inkwell::AddressSpace::default());
+                Ok(CodegenValue::Closure(
+                    self.builder
+                        .build_load(closure_ptr_type, ptr, name)
+                        .map_err(|e| e.to_string())?
+                        .into_pointer_value(),
+                ))
+            }
         }
     }
 
@@ -845,6 +890,12 @@ impl<'ctx> CodeGenerator<'ctx> {
                     .map_err(|e| e.to_string())?;
                 Ok(())
             }
+            CodegenValue::Closure(closure) => {
+                self.builder
+                    .build_store(ptr, closure)
+                    .map_err(|e| e.to_string())?;
+                Ok(())
+            }
         }
     }
 
@@ -858,7 +909,43 @@ impl<'ctx> CodeGenerator<'ctx> {
             SemanticType::String => Ok(ValueKind::String),
             SemanticType::Custom(_) => Ok(ValueKind::Object),
             SemanticType::Vector(_) => Ok(ValueKind::Vector),
+            SemanticType::Function(_, _) => Ok(ValueKind::Closure),
             _ => Err(format!("Tipo no soportado en codegen: {}", typ)),
         }
+    }
+
+    /// Si `name` es un protocolo "functor" (un unico metodo `invoke` con firma
+    /// de funcion), devuelve sus parametros y tipo de retorno. Esto permite
+    /// tratar valores de ese tipo de protocolo como closures en codegen,
+    /// reusando la misma representacion runtime que las lambdas.
+    pub(super) fn functor_protocol_signature(
+        &self,
+        name: &str,
+        analysis: &SemanticAnalysis,
+    ) -> Option<(Vec<SemanticType>, SemanticType)> {
+        let shape = analysis.protocol_shapes.get(name)?;
+        if shape.methods.len() != 1 {
+            return None;
+        }
+        let SemanticType::Function(params, ret) = shape.methods.get("invoke")? else {
+            return None;
+        };
+        Some((params.clone(), (**ret).clone()))
+    }
+
+    /// Como `value_kind_from_semantic`, pero ademas reconoce protocolos
+    /// functor declarados explicitamente (`protocol P { invoke(...): T; }`)
+    /// y los representa como `ValueKind::Closure`.
+    pub(super) fn value_kind_from_declared_type(
+        &self,
+        typ: &SemanticType,
+        analysis: &SemanticAnalysis,
+    ) -> Result<ValueKind, String> {
+        if let SemanticType::Custom(name) = typ {
+            if self.functor_protocol_signature(name, analysis).is_some() {
+                return Ok(ValueKind::Closure);
+            }
+        }
+        self.value_kind_from_semantic(typ)
     }
 }

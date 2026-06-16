@@ -105,7 +105,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                             .build_store(ptr, arg.into_int_value())
                             .map_err(|e| e.to_string())?;
                     }
-                    ValueKind::String | ValueKind::Object | ValueKind::Vector => {
+                    ValueKind::String | ValueKind::Object | ValueKind::Vector | ValueKind::Closure => {
                         self.builder
                             .build_store(ptr, arg.into_pointer_value())
                             .map_err(|e| e.to_string())?;
@@ -148,6 +148,12 @@ impl<'ctx> CodeGenerator<'ctx> {
                     let vec_val = value.into_vector()?;
                     self.builder
                         .build_return(Some(&vec_val))
+                        .map_err(|e| e.to_string())?;
+                }
+                ValueKind::Closure => {
+                    let closure_val = value.into_closure()?;
+                    self.builder
+                        .build_return(Some(&closure_val))
                         .map_err(|e| e.to_string())?;
                 }
             }
@@ -220,7 +226,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                                 .build_store(ptr, arg.into_int_value())
                                 .map_err(|e| e.to_string())?;
                         }
-                        ValueKind::String | ValueKind::Object | ValueKind::Vector => {
+                        ValueKind::String | ValueKind::Object | ValueKind::Vector | ValueKind::Closure => {
                             self.builder
                                 .build_store(ptr, arg.into_pointer_value())
                                 .map_err(|e| e.to_string())?;
@@ -265,6 +271,12 @@ impl<'ctx> CodeGenerator<'ctx> {
                             .build_return(Some(&vec_val))
                             .map_err(|e| e.to_string())?;
                     }
+                    ValueKind::Closure => {
+                        let closure_val = value.into_closure()?;
+                        self.builder
+                            .build_return(Some(&closure_val))
+                            .map_err(|e| e.to_string())?;
+                    }
                 }
 
                 self.exit_scope();
@@ -302,6 +314,10 @@ impl<'ctx> CodeGenerator<'ctx> {
                 .vector_struct
                 .ptr_type(inkwell::AddressSpace::default())
                 .fn_type(&param_types, false),
+            ValueKind::Closure => self
+                .closure_struct
+                .ptr_type(inkwell::AddressSpace::default())
+                .fn_type(&param_types, false),
         }
     }
 
@@ -321,9 +337,9 @@ impl<'ctx> CodeGenerator<'ctx> {
 
         let param_kinds = params
             .iter()
-            .map(|typ| self.value_kind_from_semantic(typ))
+            .map(|typ| self.value_kind_from_declared_type(typ, analysis))
             .collect::<Result<Vec<_>, _>>()?;
-        let ret_kind = self.value_kind_from_semantic(ret.as_ref())?;
+        let ret_kind = self.value_kind_from_declared_type(ret.as_ref(), analysis)?;
 
         Ok((param_kinds, ret_kind))
     }
@@ -352,11 +368,11 @@ impl<'ctx> CodeGenerator<'ctx> {
         param_kinds.extend(
             params
                 .iter()
-                .map(|typ| self.value_kind_from_semantic(typ))
+                .map(|typ| self.value_kind_from_declared_type(typ, analysis))
                 .collect::<Result<Vec<_>, _>>()?,
         );
 
-        let ret_kind = self.value_kind_from_semantic(ret.as_ref())?;
+        let ret_kind = self.value_kind_from_declared_type(ret.as_ref(), analysis)?;
 
         Ok((param_kinds, ret_kind))
     }

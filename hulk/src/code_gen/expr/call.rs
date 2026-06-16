@@ -25,7 +25,16 @@ impl<'ctx> CodeGenerator<'ctx> {
                 "exp" => Ok(CodegenValue::Number(self.lower_unary_math(call, analysis, "llvm.exp.f64")?)),
                 "log" => Ok(CodegenValue::Number(self.lower_log(call, analysis)?)),
                 "rand" => Ok(CodegenValue::Number(self.lower_rand(call)?)),
-                _ => self.lower_user_call(call, analysis, &callee.name),
+                _ => {
+                    let is_closure_var = self
+                        .lookup_var(&callee.name)
+                        .is_some_and(|info| info.kind == super::super::ValueKind::Closure);
+                    if is_closure_var {
+                        self.lower_closure_invocation(call, analysis)
+                    } else {
+                        self.lower_user_call(call, analysis, &callee.name)
+                    }
+                }
             },
             KindExpr::MemberAccess(member) => {
                 if let Some(result) = self.lower_vector_member_call(call, member, analysis)? {
@@ -34,9 +43,128 @@ impl<'ctx> CodeGenerator<'ctx> {
                 if let Some(result) = self.lower_namespace_member_call(call, member, analysis)? {
                     return Ok(result);
                 }
+                if self.is_closure_field_access(member, analysis) {
+                    return self.lower_closure_invocation(call, analysis);
+                }
                 self.lower_method_call(call, member, analysis)
             }
-            _ => Err("Solo se soportan llamadas a funciones o metodos".to_string()),
+            _ => self.lower_closure_invocation(call, analysis),
+        }
+    }
+
+    fn is_closure_field_access(
+        &self,
+        member: &crate::ast::MemberAccessExpr,
+        analysis: &SemanticAnalysis,
+    ) -> bool {
+        let Some(SemanticType::Custom(type_name)) = analysis.inferred_types.get(&member.object.id) else {
+            return false;
+        };
+
+        self.object_method_owner(type_name, &member.field, analysis).is_err()
+    }
+
+    pub(super) fn lower_closure_invocation(
+        &mut self,
+        call: &CallExpr,
+        analysis: &SemanticAnalysis,
+    ) -> Result<CodegenValue<'ctx>, String> {
+        let closure_value = self.lower_expr(&call.callee, analysis)?;
+        let closure_ptr = closure_value.into_closure()?;
+
+        let signature = analysis
+            .inferred_types
+            .get(&call.callee.id)
+            .ok_or_else(|| "No se encontro el tipo de la funcion a invocar".to_string())?
+            .clone();
+        let (param_types, ret_type) = match signature {
+            SemanticType::Function(param_types, ret_type) => (param_types, *ret_type),
+            SemanticType::Custom(name) => self
+                .functor_protocol_signature(&name, analysis)
+                .ok_or_else(|| "Solo se pueden invocar valores de tipo funcion".to_string())?,
+            _ => return Err("Solo se pueden invocar valores de tipo funcion".to_string()),
+        };
+
+        if call.arguments.len() != param_types.len() {
+            return Err(format!(
+                "Aridad invalida al invocar funcion: se esperaban {} argumentos y llegaron {}",
+                param_types.len(),
+                call.arguments.len()
+            ));
+        }
+
+        let param_kinds: Vec<super::super::ValueKind> = param_types
+            .iter()
+            .map(|t| self.value_kind_from_semantic(t))
+            .collect::<Result<_, _>>()?;
+        let ret_kind = self.value_kind_from_semantic(&ret_type)?;
+
+        let i8_ptr_type = self.context.i8_type().ptr_type(AddressSpace::default());
+
+        let fn_ptr_slot = self
+            .builder
+            .build_struct_gep(self.closure_struct, closure_ptr, 0, "closure_fn_slot")
+            .map_err(|e| e.to_string())?;
+        let fn_ptr = self
+            .builder
+            .build_load(i8_ptr_type, fn_ptr_slot, "closure_fn")
+            .map_err(|e| e.to_string())?
+            .into_pointer_value();
+
+        let env_ptr_slot = self
+            .builder
+            .build_struct_gep(self.closure_struct, closure_ptr, 1, "closure_env_slot")
+            .map_err(|e| e.to_string())?;
+        let env_ptr = self
+            .builder
+            .build_load(i8_ptr_type, env_ptr_slot, "closure_env")
+            .map_err(|e| e.to_string())?
+            .into_pointer_value();
+
+        let mut args = Vec::with_capacity(call.arguments.len() + 1);
+        args.push(env_ptr.into());
+
+        let mut param_basic_types: Vec<inkwell::types::BasicMetadataTypeEnum> = vec![i8_ptr_type.into()];
+        for kind in &param_kinds {
+            param_basic_types.push(self.basic_type_for_kind(kind)?.into());
+        }
+
+        for (idx, arg_expr) in call.arguments.iter().enumerate() {
+            let value = self.lower_expr(arg_expr, analysis)?;
+            let arg = match param_kinds[idx] {
+                super::super::ValueKind::Number => value.into_number()?.into(),
+                super::super::ValueKind::Bool => value.into_bool()?.into(),
+                super::super::ValueKind::String => value.into_string()?.into(),
+                super::super::ValueKind::Object => value.into_object()?.into(),
+                super::super::ValueKind::Vector => value.into_vector()?.into(),
+                super::super::ValueKind::Closure => value.into_closure()?.into(),
+            };
+            args.push(arg);
+        }
+
+        let ret_basic_type = self.basic_type_for_kind(&ret_kind)?;
+        let fn_type = ret_basic_type.fn_type(&param_basic_types, false);
+        let fn_ptr_typed = self
+            .builder
+            .build_pointer_cast(fn_ptr, fn_type.ptr_type(AddressSpace::default()), "closure_fn_typed")
+            .map_err(|e| e.to_string())?;
+
+        let call_value = self
+            .builder
+            .build_indirect_call(fn_type, fn_ptr_typed, &args, "call_closure")
+            .map_err(|e| e.to_string())?;
+        let value = call_value
+            .try_as_basic_value()
+            .left()
+            .ok_or_else(|| "La llamada al closure no devolvio un valor".to_string())?;
+
+        match ret_kind {
+            super::super::ValueKind::Number => Ok(CodegenValue::Number(value.into_float_value())),
+            super::super::ValueKind::Bool => Ok(CodegenValue::Bool(value.into_int_value())),
+            super::super::ValueKind::String => Ok(CodegenValue::String(value.into_pointer_value())),
+            super::super::ValueKind::Object => Ok(CodegenValue::Object(value.into_pointer_value())),
+            super::super::ValueKind::Vector => Ok(CodegenValue::Vector(value.into_pointer_value())),
+            super::super::ValueKind::Closure => Ok(CodegenValue::Closure(value.into_pointer_value())),
         }
     }
 
@@ -81,6 +209,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                 super::super::ValueKind::String => value.into_string()?.into(),
                 super::super::ValueKind::Object => value.into_object()?.into(),
                 super::super::ValueKind::Vector => value.into_vector()?.into(),
+                super::super::ValueKind::Closure => value.into_closure()?.into(),
             };
             args.push(arg);
         }
@@ -103,6 +232,7 @@ impl<'ctx> CodeGenerator<'ctx> {
             super::super::ValueKind::String => CodegenValue::String(call_value.into_pointer_value()),
             super::super::ValueKind::Object => CodegenValue::Object(call_value.into_pointer_value()),
             super::super::ValueKind::Vector => CodegenValue::Vector(call_value.into_pointer_value()),
+            super::super::ValueKind::Closure => CodegenValue::Closure(call_value.into_pointer_value()),
         };
 
         Ok(Some(result))
@@ -164,6 +294,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                 super::super::ValueKind::String => value.into_string()?.into(),
                 super::super::ValueKind::Object => value.into_object()?.into(),
                 super::super::ValueKind::Vector => value.into_vector()?.into(),
+                super::super::ValueKind::Closure => value.into_closure()?.into(),
             };
             args.push(arg);
         }
@@ -183,6 +314,7 @@ impl<'ctx> CodeGenerator<'ctx> {
             super::super::ValueKind::String => Ok(CodegenValue::String(value.into_pointer_value())),
             super::super::ValueKind::Object => Ok(CodegenValue::Object(value.into_pointer_value())),
             super::super::ValueKind::Vector => Ok(CodegenValue::Vector(value.into_pointer_value())),
+            super::super::ValueKind::Closure => Ok(CodegenValue::Closure(value.into_pointer_value())),
         }
     }
 
@@ -254,6 +386,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                 super::super::ValueKind::String => value.into_string()?.into(),
                 super::super::ValueKind::Object => value.into_object()?.into(),
                 super::super::ValueKind::Vector => value.into_vector()?.into(),
+                super::super::ValueKind::Closure => value.into_closure()?.into(),
             };
             args.push(arg);
         }
@@ -273,6 +406,7 @@ impl<'ctx> CodeGenerator<'ctx> {
             super::super::ValueKind::String => Ok(CodegenValue::String(value.into_pointer_value())),
             super::super::ValueKind::Object => Ok(CodegenValue::Object(value.into_pointer_value())),
             super::super::ValueKind::Vector => Ok(CodegenValue::Vector(value.into_pointer_value())),
+            super::super::ValueKind::Closure => Ok(CodegenValue::Closure(value.into_pointer_value())),
         }
     }
 
@@ -346,6 +480,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                 super::super::ValueKind::String => value.into_string()?.into(),
                 super::super::ValueKind::Object => value.into_object()?.into(),
                 super::super::ValueKind::Vector => value.into_vector()?.into(),
+                super::super::ValueKind::Closure => value.into_closure()?.into(),
             };
             args.push(arg);
         }
@@ -374,6 +509,7 @@ impl<'ctx> CodeGenerator<'ctx> {
             super::super::ValueKind::String => Ok(CodegenValue::String(value.into_pointer_value())),
             super::super::ValueKind::Object => Ok(CodegenValue::Object(value.into_pointer_value())),
             super::super::ValueKind::Vector => Ok(CodegenValue::Vector(value.into_pointer_value())),
+            super::super::ValueKind::Closure => Ok(CodegenValue::Closure(value.into_pointer_value())),
         }
     }
 
@@ -651,6 +787,16 @@ impl<'ctx> CodeGenerator<'ctx> {
                     .map_err(|e| e.to_string())?
                     .into_pointer_value(),
             ),
+            super::super::ValueKind::Closure => CodegenValue::Closure(
+                self.builder
+                    .build_load(
+                        self.closure_struct.ptr_type(AddressSpace::default()),
+                        elem_ptr,
+                        "vec_current_closure",
+                    )
+                    .map_err(|e| e.to_string())?
+                    .into_pointer_value(),
+            ),
         };
 
         Ok(current_value)
@@ -690,6 +836,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                 Ok(CodegenValue::Object(object_val))
             }
             CodegenValue::Vector(vector_val) => Ok(CodegenValue::Vector(vector_val)),
+            CodegenValue::Closure(closure_val) => Ok(CodegenValue::Closure(closure_val)),
         }
     }
 
@@ -1002,6 +1149,16 @@ impl<'ctx> CodeGenerator<'ctx> {
                         self.vector_struct.ptr_type(AddressSpace::default()),
                         elem_ptr,
                         "vec_render_elem_vec",
+                    )
+                    .map_err(|e| e.to_string())?
+                    .into_pointer_value(),
+            ),
+            super::super::ValueKind::Closure => CodegenValue::Closure(
+                self.builder
+                    .build_load(
+                        self.closure_struct.ptr_type(AddressSpace::default()),
+                        elem_ptr,
+                        "vec_render_elem_closure",
                     )
                     .map_err(|e| e.to_string())?
                     .into_pointer_value(),

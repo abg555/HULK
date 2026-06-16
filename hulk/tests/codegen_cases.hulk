@@ -82,8 +82,8 @@ function tan(x: Number): Number => x + 1;
 function use_tan(x: Number): Number => tan(x);
 use_tan(2)
 
-// example: missing_global_expr
-// expect-error: No hay expresion global para compilar
+// example: function_only_defines_in_ir
+// expect: define double @add
 function add(a: Number, b: Number): Number => a + b;
 
 // example: print_object_toString
@@ -189,69 +189,3 @@ let v = [1, 2] in v as Number[];
 // expect: vec_render
 // expect: @printf
 print([1, 2, 3])
-
-let i = 10 in
-while (i < 0) {
-    i := i + 1;
-    [1,2]
-}
-
-let v = [[1,2], [3,4], [5,6]] in
-v.size()
-
-type Box {
-    items: Number[] = [1];
-
-    set(v: Number[]): Number[] => {
-        self.items := v;
-        self.items
-    }
-
-    get(): Number[] => self.items;
-}
-
-let b = new Box() in
-b.set([7,8]) + b.get()
-
-type A {
-    f(): Number => 1;
-    g(): Number => self.f() + 1;
-}
-
-let a = new A() in
-a.g()
-
-function f(x: Number[], y: Number[]): Number[] => y;
-
-f(
-    (let a = [1] in a),
-    (let b = [2] in b)
-)
-
-
-type A {
-    f(): Number[] => [1,2];
-}
-
-let a = new A() in
-a.f().size()
-
-let v = [1,2,3] in
-(v as Number[]) as Number[]
-
-type Acc {
-    v: Number[] = [1];
-
-    add(x: Number): Number[] => {
-        self.v := [x];
-        self.v
-    }
-}
-
-let a = new Acc() in
-let i = 0 in
-while (i < 3) {
-    a.add(i);
-    i := i + 1;
-    a.v
-}

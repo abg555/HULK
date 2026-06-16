@@ -166,6 +166,20 @@ impl<'ctx> CodeGenerator<'ctx> {
                 ]);
                 Ok(CodegenValue::Vector(phi.as_basic_value().into_pointer_value()))
             }
+            ValueKind::Closure => {
+                let closure_ptr_type = self
+                    .closure_struct
+                    .ptr_type(AddressSpace::default());
+                let phi = self
+                    .builder
+                    .build_phi(closure_ptr_type, "iftmp_closure")
+                    .map_err(|e| e.to_string())?;
+                phi.add_incoming(&[
+                    (&then_value.into_closure()?, then_block),
+                    (&else_value.into_closure()?, else_block),
+                ]);
+                Ok(CodegenValue::Closure(phi.as_basic_value().into_pointer_value()))
+            }
         }
     }
 }
