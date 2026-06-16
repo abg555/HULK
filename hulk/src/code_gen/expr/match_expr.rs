@@ -366,7 +366,7 @@ impl<'ctx> CodeGenerator<'ctx> {
     }
 
     /// Declara `strcmp` de libc si aún no está en el módulo.
-    fn get_strcmp_function(&self) -> inkwell::values::FunctionValue<'ctx> {
+    pub(super) fn get_strcmp_function(&self) -> inkwell::values::FunctionValue<'ctx> {
         if let Some(f) = self.module.get_function("strcmp") {
             return f;
         }

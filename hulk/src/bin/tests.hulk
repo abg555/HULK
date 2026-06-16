@@ -387,3 +387,121 @@
 //     if (abs_val(-3) == 3) print("ok") else print("fail");
 //     if (abs_val(0) == 0) print("ok") else print("fail");
 // }
+
+// function min_val(a, b) {
+//     if (a < b) a else b;
+// }
+
+// function max_val(a, b) {
+//     if (a > b) a else b;
+// }
+
+// function clamp(val, lo, hi) {
+//     min_val(max_val(val, lo), hi);
+// }
+
+// {
+//     if (min_val(3, 5) == 3) print("ok") else print("fail");
+//     if (max_val(3, 5) == 5) print("ok") else print("fail");
+//     if (clamp(10, 0, 5) == 5) print("ok") else print("fail");
+//     if (clamp(-3, 0, 5) == 0) print("ok") else print("fail");
+//     if (clamp(3, 0, 5) == 3) print("ok") else print("fail");
+// }
+
+// // method override
+// type Printer(prefix: String) {
+//     pfx: String = prefix;
+//     format(msg: String): String { self.pfx @ msg; }
+//     print_msg(msg: String) { print(self.format(msg)); }
+// }
+
+// type FancyPrinter(prefix: String, suffix: String) inherits Printer(prefix) {
+//     sfx: String = suffix;
+//     format(msg: String): String { self.pfx @ msg @ self.sfx; }
+// }
+
+// {
+//     let p = new Printer("[INFO] ") in {
+//         if (p.format("test") == "[INFO] test") print("ok") else print("fail");
+//     };
+//     let fp = new FancyPrinter(">> ", " <<") in {
+//         if (fp.format("hello") == ">> hello <<") print("ok") else print("fail");
+//     };
+//     let base: Printer = new FancyPrinter("* ", " *") in {
+//         if (base.format("x") == "* x *") print("ok") else print("fail");
+//     };
+// }
+
+// // multilevel
+// type A(v: Number) {
+//     val: Number = v;
+//     name(): String { "A"; }
+//     get(): Number { self.val; }
+// }
+
+// type B(v: Number) inherits A(v) {
+//     name(): String { "B"; }
+// }
+
+// type C(v: Number) inherits B(v) {
+//     name(): String { "C"; }
+// }
+
+// {
+//     let a = new A(1) in {
+//         if (a.name() == "A") print("ok") else print("fail");
+//         if (a.get() == 1) print("ok") else print("fail");
+//     };
+//     let c = new C(42) in {
+//         if (c.name() == "C") print("ok") else print("fail");
+//         if (c.get() == 42) print("ok") else print("fail");
+//     };
+//     let b: A = new C(7) in {
+//         if (b.name() == "C") print("ok") else print("fail");
+//         if (b.get() == 7) print("ok") else print("fail");
+//     };
+// }
+
+// // polymorphism
+// type Vehicle(spd: Number) {
+//     speed: Number = spd;
+//     move(): String { "moving"; }
+//     max_speed(): Number { self.speed; }
+// }
+
+// type Car(spd: Number, d: Number) inherits Vehicle(spd) {
+//     doors: Number = d;
+//     move(): String { "driving"; }
+// }
+
+// type Bike(spd: Number) inherits Vehicle(spd) {
+//     move(): String { "cycling"; }
+// }
+
+// {
+//     let v: Vehicle = new Car(120, 4) in {
+//         if (v.move() == "driving") print("ok") else print("fail");
+//         if (v.max_speed() == 120) print("ok") else print("fail");
+//     };
+//     let b: Vehicle = new Bike(25) in {
+//         if (b.move() == "cycling") print("ok") else print("fail");
+//         if (b.max_speed() == 25) print("ok") else print("fail");
+//     };
+// }
+
+type Accumulator(init: Number) {
+    total: Number = init;
+
+    add(n: Number) { self.total := self.total + n; }
+    sub(n: Number) { self.total := self.total - n; }
+    scale(n: Number) { self.total := self.total * n; }
+    double() { self.scale(2); }
+    value(): Number { self.total; }
+}
+
+let acc = new Accumulator(100) in {
+    acc.add(50);
+    acc.sub(30);
+    acc.double();
+    if (acc.value() == 240) print("ok") else print("fail");
+};

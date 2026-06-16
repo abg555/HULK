@@ -1,9 +1,10 @@
 use inkwell::values::FloatValue;
 use inkwell::FloatPredicate;
+use inkwell::IntPredicate;
 
 use crate::ast::BinaryOperator;
 
-use super::super::{CodeGenerator, CodegenValue};
+use super::super::{CodeGenerator, CodegenValue, ValueKind};
 
 impl<'ctx> CodeGenerator<'ctx> {
     pub(super) fn build_binary_op(
@@ -64,8 +65,8 @@ impl<'ctx> CodeGenerator<'ctx> {
                 let value = self.build_pow(left, right)?;
                 Ok(CodegenValue::Number(value))
             }
-            BinaryOperator::Equal => self.build_float_compare(FloatPredicate::OEQ, left, right),
-            BinaryOperator::NotEqual => self.build_float_compare(FloatPredicate::ONE, left, right),
+            BinaryOperator::Equal => self.build_equality(left, right, false),
+            BinaryOperator::NotEqual => self.build_equality(left, right, true),
             BinaryOperator::Less => self.build_float_compare(FloatPredicate::OLT, left, right),
             BinaryOperator::Greater => self.build_float_compare(FloatPredicate::OGT, left, right),
             BinaryOperator::LessEqual => self.build_float_compare(FloatPredicate::OLE, left, right),
@@ -299,5 +300,65 @@ impl<'ctx> CodeGenerator<'ctx> {
         let i8_ptr_type = self.context.i8_type().ptr_type(inkwell::AddressSpace::default());
         let fn_type = i8_ptr_type.fn_type(&[self.f64_type.into()], false);
         self.module.add_function("hulk_format_number", fn_type, None)
+    }
+
+    fn build_equality(
+        &self,
+        left: CodegenValue<'ctx>,
+        right: CodegenValue<'ctx>,
+        negate: bool,
+    ) -> Result<CodegenValue<'ctx>, String> {
+        match left.kind() {
+            ValueKind::Number => {
+                let pred = if negate { FloatPredicate::ONE } else { FloatPredicate::OEQ };
+                self.build_float_compare(pred, left, right)
+            }
+            ValueKind::Bool => self.build_bool_equality(left, right, negate),
+            ValueKind::String => self.build_string_equality(left, right, negate),
+            other => Err(format!("El operador == no soporta el tipo {:?}", other)),
+        }
+    }
+
+    fn build_bool_equality(
+        &self,
+        left: CodegenValue<'ctx>,
+        right: CodegenValue<'ctx>,
+        negate: bool,
+    ) -> Result<CodegenValue<'ctx>, String> {
+        let left_val = left.into_bool()?;
+        let right_val = right.into_bool()?;
+        let pred = if negate { IntPredicate::NE } else { IntPredicate::EQ };
+        let cmp = self
+            .builder
+            .build_int_compare(pred, left_val, right_val, "booleqtmp")
+            .map_err(|e| e.to_string())?;
+        Ok(CodegenValue::Bool(cmp))
+    }
+
+    fn build_string_equality(
+        &self,
+        left: CodegenValue<'ctx>,
+        right: CodegenValue<'ctx>,
+        negate: bool,
+    ) -> Result<CodegenValue<'ctx>, String> {
+        let left_str = left.into_string()?;
+        let right_str = right.into_string()?;
+        let strcmp_fn = self.get_strcmp_function();
+        let call = self
+            .builder
+            .build_call(strcmp_fn, &[left_str.into(), right_str.into()], "streqtmp")
+            .map_err(|e| e.to_string())?;
+        let result = call
+            .try_as_basic_value()
+            .left()
+            .ok_or_else(|| "strcmp no devolvio un valor".to_string())?
+            .into_int_value();
+        let zero = self.context.i32_type().const_int(0, false);
+        let pred = if negate { IntPredicate::NE } else { IntPredicate::EQ };
+        let cmp = self
+            .builder
+            .build_int_compare(pred, result, zero, "strcmptmp")
+            .map_err(|e| e.to_string())?;
+        Ok(CodegenValue::Bool(cmp))
     }
 }
