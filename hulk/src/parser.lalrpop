@@ -23,12 +23,13 @@ extern {
         "is" => Token::Is,
         "as" => Token::As,
         "protocol" => Token::Protocol,
+        "interface" => Token::Interface,
         "match" => Token::Match,
         "case" => Token::Case,
         "default" => Token::Default,
         "def" => Token::Def,
+        "define" => Token::Define,
         "self" => Token::SelfToken,
-        "base" => Token::Base,
         "lambda" => Token::Lambda,
         "id" => Token::Identifier(<String>),
         "num" => Token::Number(<f64>),
@@ -133,6 +134,8 @@ ExportDecl: ExportDecl = {
 MacroDecl: MacroDecl = {
     "def" <name:"id"> "(" <params:MacroParamList> ")" <_return_type:(":" <TypeRef>)?> "=>" <body:Expr> ";" => MacroDecl {name,params,body},
     "def" <name:"id"> "(" <params:MacroParamList> ")" <_return_type:(":" <TypeRef>)?> <body:BlockExpr> => MacroDecl {name,params,body},
+    "define" <name:"id"> "(" <params:MacroParamList> ")" <_return_type:(":" <TypeRef>)?> "->" <body:Expr> ";" => MacroDecl {name,params,body},
+    "define" <name:"id"> "(" <params:MacroParamList> ")" <_return_type:(":" <TypeRef>)?> <body:BlockExpr> => MacroDecl {name,params,body},
 };
 
 MacroParamList: Vec<MacroParam> = {
@@ -153,7 +156,8 @@ MacroParam: MacroParam = {
 }
 
 ProtocolDecl: ProtocolDecl = {
-    "protocol" <name:"id"> <parent:ProtocolParent?> "{" <methods:ProtocolMethodList> "}" => ProtocolDecl {name, parent, methods}
+    "protocol" <name:"id"> <parent:ProtocolParent?> "{" <methods:ProtocolMethodList> "}" => ProtocolDecl {name, parent, methods},
+    "interface" <name:"id"> <parent:ProtocolParent?> "{" <methods:ProtocolMethodList> "}" => ProtocolDecl {name, parent, methods}
 };
 
 ProtocolParent: Box<TypeRef> = {
@@ -167,6 +171,7 @@ ProtocolMethodList: Vec<ProtocolMethod> = {
 
 ProtocolMethodDef: ProtocolMethod = {
     <name:"id"> "(" <params:ParamList> ")" ":" <return_type:TypeRef> ";" => ProtocolMethod {name,params,return_type,}
+    
 };
 
 TypeDecl: TypeDecl = {
@@ -212,6 +217,8 @@ FunctionDecl: FunctionDecl = {
     "function" <name:"id"> "(" <params:ParamList> ")" <return_type:(":" <TypeRef>)?> <body:BlockExpr> => FunctionDecl {name, params, return_type, body,},
 }
 
+
+
 ParamList: Vec<Param> = {
     => vec![],
     <p:Param> => vec![p],
@@ -251,10 +258,21 @@ ForExpr : Expr = {
 
 LambdaExpr: Expr = {
     "lambda" "(" <params:ParamList> ")" <return_type:(":" <TypeRef>)?> "=>" <body:Expr> => mk_expr(KindExpr::Lambda(LambdaExpr { params, return_type, body: Box::new(body)})),
+    "function" "(" <params:ParamList> ")" <return_type:(":" <TypeRef>)?> "->" <body:Expr> => mk_expr(KindExpr::Lambda(LambdaExpr { params, return_type, body: Box::new(body)})),
 }
 
 NewExpr: Expr = {
-    "new" <type_name:"id"> "(" <arguments:ArgList> ")" => mk_expr(KindExpr::New(NewExpr { type_name, arguments })),
+    "new" <name:NewTypeName> "(" <arguments:ArgList> ")" => {mk_expr(KindExpr::New(NewExpr { type_name: name, arguments }))},
+    "new" <name:NewTypeName> "[" <size:Expr> "]" => {mk_expr(KindExpr::New(NewExpr { type_name: format!("{}[]", name), arguments: vec![size] }))},
+    "new" <name:NewTypeName> "[" "]" => {mk_expr(KindExpr::New(NewExpr { type_name: format!("{}[]", name), arguments: vec![] }))},
+}
+
+// Regla auxiliar para capturar el identificador base (sin sufijos de array)
+NewTypeName: String = {
+    "Number" => "Number".to_string(),
+    "String" => "String".to_string(),
+    "Boolean" => "Boolean".to_string(),
+    <name:"id"> => name,
 }
 
 MatchExpr: Expr = {
@@ -502,7 +520,6 @@ ArgList: Vec<Expr> = {
 }
 
 PrimaryExpr: Expr= {
-    "base" "(" <args:ArgList> ")" => mk_expr(KindExpr::BaseCall(BaseCallExpr { arguments: args })),
     "num" => mk_expr(KindExpr:: Literal(LiteralExpr { value: LiteralValue::Number(<>) }) ),
     "str" => mk_expr(KindExpr:: Literal(LiteralExpr { value: LiteralValue::String(<>) }) ),
     "true" => mk_expr(KindExpr:: Literal(LiteralExpr { value: LiteralValue::Bool(true) }) ),

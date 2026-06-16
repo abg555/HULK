@@ -59,11 +59,17 @@ pub enum Token {
     #[token("protocol")]
     Protocol,
 
+    #[token("interface")]
+    Interface,
+
     #[token("extends")]
     Extends,
 
     #[token("def")]
     Def,
+
+    #[token("define")]
+    Define,
 
     #[token("match")]
     Match,
@@ -76,9 +82,6 @@ pub enum Token {
 
     #[token("self")]
     SelfToken,
-
-    #[token("base")]
-    Base,
 
     #[token("true")]
     True,
@@ -216,32 +219,30 @@ pub enum Token {
     Number(f64),
 
     //strings
-    #[regex(r#""([^"\\]|\\.)*""#, |lex| {
-        let s = lex.slice();
-        let unquoted = &s[1..s.len()-1];
-        let mut result = String::new();
-        let mut chars = unquoted.chars();
-        while let Some(ch) = chars.next() {
-            if ch == '\\' {
-                if let Some(next_ch) = chars.next() {
-                    match next_ch {
-                        'n' => result.push('\n'),
-                        't' => result.push('\t'),
-                        'r' => result.push('\r'),
-                        '\\'=> result.push('\\'),
-                        '"' => result.push('"'),
-                        _ => {
-                            result.push('\\');
-                            result.push(next_ch);
-                        }
-                    }
-                }
-            } else {
-                result.push(ch);
+    #[regex(r#""([^"\\]|\\[ntr"\\])*""#, |lex| {
+    let s = lex.slice();
+    let unquoted = &s[1..s.len()-1];
+
+    let mut result = String::new();
+    let mut chars = unquoted.chars();
+
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            match chars.next().unwrap() {
+                'n' => result.push('\n'),
+                't' => result.push('\t'),
+                'r' => result.push('\r'),
+                '\\' => result.push('\\'),
+                '"' => result.push('"'),
+                _ => unreachable!(),
             }
+        } else {
+            result.push(ch);
         }
-        result
-    })]
+    }
+
+    result
+})]
     String(String),
 }
 
@@ -457,42 +458,7 @@ fn parse_atomic_expr_end(tokens: &[Token], start: usize) -> Option<usize> {
         | Token::String(_)
         | Token::True
         | Token::False
-        | Token::SelfToken
-        | Token::Base => {
-            let mut end = start;
-            loop {
-                if end + 1 >= tokens.len() {
-                    break;
-                }
-
-                match tokens[end + 1] {
-                    Token::Dot => {
-                        if end + 2 < tokens.len() && matches!(tokens[end + 2], Token::Identifier(_))
-                        {
-                            end += 2;
-                        } else {
-                            break;
-                        }
-                    }
-                    Token::LParen => {
-                        if let Some(rp) = find_matching_paren(tokens, end + 1) {
-                            end = rp;
-                        } else {
-                            break;
-                        }
-                    }
-                    Token::LBracket => {
-                        if let Some(rb) = find_matching_rbracket(tokens, end + 1) {
-                            end = rb;
-                        } else {
-                            break;
-                        }
-                    }
-                    _ => break,
-                }
-            }
-            Some(end)
-        }
+        | Token::SelfToken => Some(start),
         _ => None,
     }
 }

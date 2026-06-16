@@ -1,14 +1,15 @@
 // ------------------------------Lexicos----------------------------------------------------------
 
 // // bad string
-// let x = "unterminated
-// in print(x);
+//let x = "unterminated
+//in print(x);
 
 // // invalid char
-// let x = $5 in print(x);
+//let x = $5 in print(x);
 
 // ----------------------------------Semanticos-----------------------------------------------------------------
 
+<<<<<<< Updated upstream
 // type mismatch 
 function add(x: Number, y: Number): Number {
     x + y;
@@ -17,6 +18,16 @@ function add(x: Number, y: Number): Number {
 {
     add("hello", 5);
 };
+=======
+// // type mismatch 
+ function add(x: Number, y: Number): Number {
+     x + y;
+ }
+
+ {
+     add("hello", 5);
+ };
+>>>>>>> Stashed changes
 
 // // undeclared var
 // let x = 5 in print(y);
@@ -33,7 +44,7 @@ function add(x: Number, y: Number): Number {
 // -----------------------------------Sintactico-------------------------------------------------
 
 // // invalid assignement
-// let 42 = x in print(x);
+//let 42 = x in print(x);
 
 // // missing parent
 // let x = 5 in
