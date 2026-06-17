@@ -1,0 +1,2 @@
+(1,1) SEMANTIC: Se encontraron errores semánticos:
+  - Diagnostic { level: Error, message: "Rama else inalcanzable: la condicion del if es siempre true", span: Span { start: 0, end: 0 }, hints: [] }
