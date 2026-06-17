@@ -20,15 +20,21 @@ impl<'ctx> CodeGenerator<'ctx> {
         match value {
             CodegenValue::Number(_) => {
                 let result = matches!(target, SemanticType::Number);
-                Ok(CodegenValue::Bool(self.bool_type.const_int(u64::from(result), false)))
+                Ok(CodegenValue::Bool(
+                    self.bool_type.const_int(u64::from(result), false),
+                ))
             }
             CodegenValue::Bool(_) => {
                 let result = matches!(target, SemanticType::Boolean);
-                Ok(CodegenValue::Bool(self.bool_type.const_int(u64::from(result), false)))
+                Ok(CodegenValue::Bool(
+                    self.bool_type.const_int(u64::from(result), false),
+                ))
             }
             CodegenValue::String(_) => {
                 let result = matches!(target, SemanticType::String);
-                Ok(CodegenValue::Bool(self.bool_type.const_int(u64::from(result), false)))
+                Ok(CodegenValue::Bool(
+                    self.bool_type.const_int(u64::from(result), false),
+                ))
             }
             CodegenValue::Object(object_value) => {
                 let SemanticType::Custom(target_name) = target else {
@@ -132,7 +138,9 @@ impl<'ctx> CodeGenerator<'ctx> {
                     .builder
                     .get_insert_block()
                     .and_then(|block| block.get_parent())
-                    .ok_or_else(|| "No se pudo determinar la funcion actual para 'as'".to_string())?;
+                    .ok_or_else(|| {
+                        "No se pudo determinar la funcion actual para 'as'".to_string()
+                    })?;
                 let ok_block = self.context.append_basic_block(function, "as_ok");
                 let fail_block = self.context.append_basic_block(function, "as_fail");
                 let cont_block = self.context.append_basic_block(function, "as_cont");
@@ -151,7 +159,9 @@ impl<'ctx> CodeGenerator<'ctx> {
                 self.builder
                     .build_call(panic_fn, &[msg.as_pointer_value().into()], "as_panic")
                     .map_err(|e| e.to_string())?;
-                self.builder.build_unreachable().map_err(|e| e.to_string())?;
+                self.builder
+                    .build_unreachable()
+                    .map_err(|e| e.to_string())?;
 
                 self.builder.position_at_end(ok_block);
                 self.builder
@@ -183,10 +193,7 @@ impl<'ctx> CodeGenerator<'ctx> {
             return function;
         }
 
-        let i8_ptr = self
-            .context
-            .i8_type()
-            .ptr_type(AddressSpace::default());
+        let i8_ptr = self.context.i8_type().ptr_type(AddressSpace::default());
         let fn_type = self.context.void_type().fn_type(&[i8_ptr.into()], false);
         self.module.add_function("hulk_panic", fn_type, None)
     }
@@ -368,7 +375,10 @@ impl<'ctx> CodeGenerator<'ctx> {
 
         if let Some(parent) = &decl.parent {
             let SemanticType::Custom(parent_name) = SemanticType::from_type_ref(parent) else {
-                return Err(format!("El padre de {} debe ser un tipo nombrado", type_name));
+                return Err(format!(
+                    "El padre de {} debe ser un tipo nombrado",
+                    type_name
+                ));
             };
 
             // Determine parent args to pass:
@@ -376,7 +386,8 @@ impl<'ctx> CodeGenerator<'ctx> {
             // - Else if the child type has no explicit ctor params (implicit inheritance),
             //   forward the current `arg_exprs` (or the prefix matching parent's arity).
             // - Otherwise, pass an empty list.
-            let parent_args_vec: Vec<crate::ast::Expr> = if let Some(parent_arg) = &decl.parent_arg {
+            let parent_args_vec: Vec<crate::ast::Expr> = if let Some(parent_arg) = &decl.parent_arg
+            {
                 if !parent_arg.is_empty() {
                     parent_arg.clone()
                 } else if decl.param.is_empty() {

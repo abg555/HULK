@@ -67,21 +67,21 @@
 
 // ---------------------------------------OOP----------------------------------------------------------------------------------
 
-// // basic class
-// type Point(x_val: Number, y_val: Number) {
-//     x: Number = x_val;
-//     y: Number = y_val;
+// basic class
+type Point(x_val: Number, y_val: Number) {
+    x: Number = x_val;
+    y: Number = y_val;
 
-//     getX(): Number => self.x;
-//     getY(): Number => self.y;
-//     sum(): Number => self.x + self.y;
-// }
+    getX(): Number => self.x;
+    getY(): Number => self.y;
+    sum(): Number => self.x + self.y;
+}
 
-// let p = new Point(3, 4) in {
-//     if (p.getX() == 3) print("ok") else print("fail");
-//     if (p.getY() == 4) print("ok") else print("fail");
-//     if (p.sum() == 7) print("ok") else print("fail");
-// };
+let p = new Point(3, 4) in {
+    if (p.getX() == 3) print("ok") else print("fail");
+    if (p.getY() == 4) print("ok") else print("fail");
+    if (p.sum() == 7) print("ok") else print("fail");
+};
 
 // // inheritance
 // type Animal(n: String) {
