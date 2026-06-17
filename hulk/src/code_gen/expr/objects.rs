@@ -70,6 +70,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                 Ok(CodegenValue::Bool(result))
             }
             CodegenValue::Vector(_) => Ok(CodegenValue::Bool(self.bool_type.const_int(0, false))),
+            CodegenValue::Closure(_) => Ok(CodegenValue::Bool(self.bool_type.const_int(0, false))),
         }
     }
 
@@ -175,6 +176,13 @@ impl<'ctx> CodeGenerator<'ctx> {
                     Ok(CodegenValue::Vector(vector))
                 } else {
                     Err("Cast 'as' no soportado para Vector".to_string())
+                }
+            }
+            CodegenValue::Closure(closure) => {
+                if matches!(target, SemanticType::Function(_, _)) {
+                    Ok(CodegenValue::Closure(closure))
+                } else {
+                    Err("Cast 'as' no soportado para Function".to_string())
                 }
             }
         }

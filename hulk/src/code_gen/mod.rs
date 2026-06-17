@@ -2,6 +2,7 @@ use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::Module;
 use inkwell::types::{BasicTypeEnum, FloatType, IntType, StructType};
+use inkwell::types::BasicType;
 use inkwell::values::{FloatValue, GlobalValue, IntValue, PointerValue};
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -37,10 +38,10 @@ pub struct CodeGenerator<'ctx> {
     type_ids: HashMap<String, u64>,
     method_orders: HashMap<String, Vec<String>>,
     vector_struct: StructType<'ctx>,
+    closure_struct: StructType<'ctx>,
+    thunk_functions: HashMap<String, inkwell::values::FunctionValue<'ctx>>,
     current_type: Option<String>,
     current_method: Option<String>,
-    /// Directory of the source file being compiled, used for resolving imports.
-    source_dir: std::path::PathBuf,
 }
 
 #[derive(Clone, Debug)]
@@ -57,6 +58,7 @@ pub enum ValueKind {
     String,
     Object,
     Vector,
+    Closure,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -66,6 +68,7 @@ pub enum CodegenValue<'ctx> {
     String(PointerValue<'ctx>),
     Object(PointerValue<'ctx>),
     Vector(PointerValue<'ctx>),
+    Closure(PointerValue<'ctx>),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -82,6 +85,7 @@ impl<'ctx> CodegenValue<'ctx> {
             CodegenValue::String(_) => ValueKind::String,
             CodegenValue::Object(_) => ValueKind::Object,
             CodegenValue::Vector(_) => ValueKind::Vector,
+            CodegenValue::Closure(_) => ValueKind::Closure,
         }
     }
 
@@ -119,18 +123,17 @@ impl<'ctx> CodegenValue<'ctx> {
             _ => Err("Se esperaba Vector".to_string()),
         }
     }
+
+    pub fn into_closure(self) -> Result<PointerValue<'ctx>, String> {
+        match self {
+            CodegenValue::Closure(value) => Ok(value),
+            _ => Err("Se esperaba un valor funcion (closure)".to_string()),
+        }
+    }
 }
 
 impl<'ctx> CodeGenerator<'ctx> {
     pub fn new(context: &'ctx Context, module_name: &str) -> Self {
-        Self::with_source_dir(context, module_name, std::path::Path::new("."))
-    }
-
-    pub fn with_source_dir(
-        context: &'ctx Context,
-        module_name: &str,
-        source_file: &std::path::Path,
-    ) -> Self {
         let vector_struct = context.struct_type(
             &[
                 context.i64_type().into(),
@@ -143,10 +146,8 @@ impl<'ctx> CodeGenerator<'ctx> {
             false,
         );
 
-        let source_dir = source_file
-            .parent()
-            .unwrap_or_else(|| std::path::Path::new("."))
-            .to_path_buf();
+        let i8_ptr_type = context.i8_type().ptr_type(inkwell::AddressSpace::default());
+        let closure_struct = context.struct_type(&[i8_ptr_type.into(), i8_ptr_type.into()], false);
 
         Self {
             context,
@@ -164,9 +165,10 @@ impl<'ctx> CodeGenerator<'ctx> {
             type_ids: HashMap::new(),
             method_orders: HashMap::new(),
             vector_struct,
+            closure_struct,
+            thunk_functions: HashMap::new(),
             current_type: None,
             current_method: None,
-            source_dir,
         }
     }
 
@@ -181,41 +183,16 @@ impl<'ctx> CodeGenerator<'ctx> {
     ) -> Result<(), String> {
         let imported_units = self.collect_imported_module_units(program)?;
 
-        // Merge type/protocol shapes from imported modules so cross-module
-        // struct layout, vtable building, and method resolution all work.
-        let merged = Self::merge_analyses_for_types(analysis, &imported_units);
-
-        // Collect type declarations from every module (accumulates, not replaces).
-        self.type_decls.clear();
-        self.method_orders.clear();
         self.collect_type_decls(program);
-        for unit in &imported_units {
-            self.collect_type_decls(&unit.program);
-        }
-
-        self.prepare_object_types(&merged)?;
-
-        // Forward-declare all functions and methods before defining any bodies.
+        self.prepare_object_types(analysis)?;
         self.declare_functions(program, analysis)?;
         for unit in &imported_units {
             self.declare_functions(&unit.program, &unit.analysis)?;
         }
         self.declare_methods(program, analysis)?;
-        for unit in &imported_units {
-            self.declare_methods(&unit.program, &unit.analysis)?;
-        }
-
-        self.prepare_vtables(&merged)?;
-
-        // Emit function and method bodies for every module.
+        self.prepare_vtables(analysis)?;
         self.define_functions(program, analysis)?;
-        for unit in &imported_units {
-            self.define_functions(&unit.program, &unit.analysis)?;
-        }
         self.define_methods(program, analysis)?;
-        for unit in &imported_units {
-            self.define_methods(&unit.program, &unit.analysis)?;
-        }
 
         let global_exprs = program
             .items
@@ -226,27 +203,50 @@ impl<'ctx> CodeGenerator<'ctx> {
             })
             .collect::<Vec<_>>();
 
-        if global_exprs.is_empty() {
-            return Err("No hay expresion global para compilar".to_string());
-        }
-
-        // Program entrypoint must use C ABI shape `int main(void)`.
-        // Global expressions are evaluated for side effects; the process exits with 0.
-        let fn_type = self.context.i32_type().fn_type(&[], false);
+        let fn_type = if let Some(last_expr) = global_exprs.last() {
+            let value_kind = self.value_kind_for_expr(last_expr, analysis)?;
+            self.basic_type_for_kind(&value_kind)?.fn_type(&[], false)
+        } else {
+            self.f64_type.fn_type(&[], false)
+        };
 
         let function = self.module.add_function("main", fn_type, None);
         let block = self.context.append_basic_block(function, "entry");
 
         self.builder.position_at_end(block);
 
-        for expr in &global_exprs {
-            let _ = self.lower_expr(expr, analysis)?;
-        }
+        if let Some((last_expr, leading_exprs)) = global_exprs.split_last() {
+            for expr in leading_exprs {
+                let _ = self.lower_expr(expr, analysis)?;
+            }
 
-        let exit_code = self.context.i32_type().const_zero();
-        self.builder
-            .build_return(Some(&exit_code))
-            .map_err(|e| e.to_string())?;
+            let value = self.lower_expr(last_expr, analysis)?;
+            match value {
+                CodegenValue::Number(number) => {
+                    self.builder
+                        .build_return(Some(&number))
+                        .map_err(|e| e.to_string())?;
+                }
+                CodegenValue::Bool(boolean) => {
+                    self.builder
+                        .build_return(Some(&boolean))
+                        .map_err(|e| e.to_string())?;
+                }
+                CodegenValue::String(string)
+                | CodegenValue::Object(string)
+                | CodegenValue::Vector(string)
+                | CodegenValue::Closure(string) => {
+                    self.builder
+                        .build_return(Some(&string))
+                        .map_err(|e| e.to_string())?;
+                }
+            }
+        } else {
+            let number = self.f64_type.const_float(0.0);
+            self.builder
+                .build_return(Some(&number))
+                .map_err(|e| e.to_string())?;
+        }
 
         Ok(())
     }
@@ -279,11 +279,9 @@ impl<'ctx> CodeGenerator<'ctx> {
             return Ok(());
         }
 
-        // Resolve import path relative to the source file's directory.
-        let rel = format!("{}.hulk", module.replace('.', "/"));
-        let path = self.source_dir.join(&rel);
+        let path = format!("{}.hulk", module.replace('.', "/"));
         let source = fs::read_to_string(&path)
-            .map_err(|e| format!("No se pudo leer modulo importado {} ({}): {}", module, path.display(), e))?;
+            .map_err(|e| format!("No se pudo leer modulo importado {} ({}): {}", module, path, e))?;
         let program = crate::parse_program(&source)
             .map_err(|diags| format!("No se pudo parsear modulo importado {}: {:?}", module, diags))?;
         let analysis = SemanticAnalyzer::new()
@@ -338,37 +336,15 @@ impl<'ctx> CodeGenerator<'ctx> {
     }
 
     pub(super) fn collect_type_decls(&mut self, program: &Program) {
-        // Extend (not replace) so multiple programs can be collected in one pass.
-        for item in &program.items {
-            if let Item::Type(typ) = item {
-                self.type_decls
-                    .entry(typ.name.clone())
-                    .or_insert_with(|| typ.clone());
-            }
-        }
-    }
-
-    /// Merges type_shapes, protocol_shapes, and global_symbols from all
-    /// imported units into a single analysis used for cross-module lookups
-    /// (struct layout, vtable construction, method resolution).
-    /// Does NOT merge inferred_types because node IDs across programs conflict.
-    fn merge_analyses_for_types(
-        main: &SemanticAnalysis,
-        imported: &[ImportedModuleUnit],
-    ) -> SemanticAnalysis {
-        let mut merged = main.clone();
-        for unit in imported {
-            for (name, shape) in &unit.analysis.type_shapes {
-                merged.type_shapes.entry(name.clone()).or_insert_with(|| shape.clone());
-            }
-            for (name, shape) in &unit.analysis.protocol_shapes {
-                merged.protocol_shapes.entry(name.clone()).or_insert_with(|| shape.clone());
-            }
-            for (name, sym) in &unit.analysis.global_symbols {
-                merged.global_symbols.entry(name.clone()).or_insert_with(|| sym.clone());
-            }
-        }
-        merged
+        self.type_decls = program
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Type(typ) => Some((typ.name.clone(), typ.clone())),
+                _ => None,
+            })
+            .collect();
+        self.method_orders.clear();
     }
 
     pub(super) fn method_symbol_name(&self, type_name: &str, method_name: &str) -> String {
@@ -603,6 +579,7 @@ impl<'ctx> CodeGenerator<'ctx> {
             SemanticType::String => Ok(ValueKind::String),
             SemanticType::Custom(_) => Ok(ValueKind::Object),
             SemanticType::Vector(_) => Ok(ValueKind::Vector),
+            SemanticType::Function(_, _) => Ok(ValueKind::Closure),
             _ => Err(format!("Tipo no soportado en codegen: {:?} -> {}", expr.id, kind)),
         }
     }
@@ -630,6 +607,11 @@ impl<'ctx> CodeGenerator<'ctx> {
                     .ptr_type(inkwell::AddressSpace::default())
                     .const_null(),
             )),
+            ValueKind::Closure => Ok(CodegenValue::Closure(
+                self.closure_struct
+                    .ptr_type(inkwell::AddressSpace::default())
+                    .const_null(),
+            )),
         }
     }
 
@@ -648,6 +630,11 @@ impl<'ctx> CodeGenerator<'ctx> {
             ),
             ValueKind::Vector => Ok(
                 self.vector_struct
+                    .ptr_type(inkwell::AddressSpace::default())
+                    .into(),
+            ),
+            ValueKind::Closure => Ok(
+                self.closure_struct
                     .ptr_type(inkwell::AddressSpace::default())
                     .into(),
             ),
@@ -678,10 +665,8 @@ impl<'ctx> CodeGenerator<'ctx> {
                     .ptr_type(inkwell::AddressSpace::default())
                     .into(),
             ),
-            // Function values are object pointers at runtime.
             SemanticType::Function(_, _) => Ok(
-                self.context
-                    .i8_type()
+                self.closure_struct
                     .ptr_type(inkwell::AddressSpace::default())
                     .into(),
             ),
@@ -861,6 +846,17 @@ impl<'ctx> CodeGenerator<'ctx> {
                         .into_pointer_value(),
                 ))
             }
+            ValueKind::Closure => {
+                let closure_ptr_type = self
+                    .closure_struct
+                    .ptr_type(inkwell::AddressSpace::default());
+                Ok(CodegenValue::Closure(
+                    self.builder
+                        .build_load(closure_ptr_type, ptr, name)
+                        .map_err(|e| e.to_string())?
+                        .into_pointer_value(),
+                ))
+            }
         }
     }
 
@@ -894,6 +890,12 @@ impl<'ctx> CodeGenerator<'ctx> {
                     .map_err(|e| e.to_string())?;
                 Ok(())
             }
+            CodegenValue::Closure(closure) => {
+                self.builder
+                    .build_store(ptr, closure)
+                    .map_err(|e| e.to_string())?;
+                Ok(())
+            }
         }
     }
 
@@ -907,10 +909,43 @@ impl<'ctx> CodeGenerator<'ctx> {
             SemanticType::String => Ok(ValueKind::String),
             SemanticType::Custom(_) => Ok(ValueKind::Object),
             SemanticType::Vector(_) => Ok(ValueKind::Vector),
-            // Function values are represented as object pointers at runtime
-            // (either as bare function pointers or as _FunctorWrapper objects).
-            SemanticType::Function(_, _) => Ok(ValueKind::Object),
+            SemanticType::Function(_, _) => Ok(ValueKind::Closure),
             _ => Err(format!("Tipo no soportado en codegen: {}", typ)),
         }
+    }
+
+    /// Si `name` es un protocolo "functor" (un unico metodo `invoke` con firma
+    /// de funcion), devuelve sus parametros y tipo de retorno. Esto permite
+    /// tratar valores de ese tipo de protocolo como closures en codegen,
+    /// reusando la misma representacion runtime que las lambdas.
+    pub(super) fn functor_protocol_signature(
+        &self,
+        name: &str,
+        analysis: &SemanticAnalysis,
+    ) -> Option<(Vec<SemanticType>, SemanticType)> {
+        let shape = analysis.protocol_shapes.get(name)?;
+        if shape.methods.len() != 1 {
+            return None;
+        }
+        let SemanticType::Function(params, ret) = shape.methods.get("invoke")? else {
+            return None;
+        };
+        Some((params.clone(), (**ret).clone()))
+    }
+
+    /// Como `value_kind_from_semantic`, pero ademas reconoce protocolos
+    /// functor declarados explicitamente (`protocol P { invoke(...): T; }`)
+    /// y los representa como `ValueKind::Closure`.
+    pub(super) fn value_kind_from_declared_type(
+        &self,
+        typ: &SemanticType,
+        analysis: &SemanticAnalysis,
+    ) -> Result<ValueKind, String> {
+        if let SemanticType::Custom(name) = typ {
+            if self.functor_protocol_signature(name, analysis).is_some() {
+                return Ok(ValueKind::Closure);
+            }
+        }
+        self.value_kind_from_semantic(typ)
     }
 }

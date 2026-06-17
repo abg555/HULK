@@ -34,9 +34,14 @@ impl<'ctx> CodeGenerator<'ctx> {
             _ => {}
         }
 
-        let info = self
-            .lookup_var(&variable.name)
-            .ok_or_else(|| format!("Variable no definida: {}", variable.name))?;
-        self.load_value(&info.kind, info.ptr, &format!("load_{}", variable.name))
+        if let Some(info) = self.lookup_var(&variable.name) {
+            return self.load_value(&info.kind, info.ptr, &format!("load_{}", variable.name));
+        }
+
+        if self.get_function(&variable.name).is_some() {
+            return self.function_value_as_closure(&variable.name);
+        }
+
+        Err(format!("Variable no definida: {}", variable.name))
     }
 }
