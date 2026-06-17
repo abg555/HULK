@@ -1,5 +1,0 @@
-function get_number(): Number {
-    "hello";
-}
-
-print(get_number());
