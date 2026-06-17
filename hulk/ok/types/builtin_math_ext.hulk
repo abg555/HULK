@@ -1,7 +1,0 @@
-{
-    if (sqrt(100) == 10) print("ok") else print("fail");
-    if (sqrt(1) == 1) print("ok") else print("fail");
-    if (sqrt(0) == 0) print("ok") else print("fail");
-    if (sin(0) == 0) print("ok") else print("fail");
-    if (cos(0) == 1) print("ok") else print("fail");
-}

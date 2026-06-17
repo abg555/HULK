@@ -195,8 +195,7 @@ impl SemanticAnalyzer {
 
                     match callee {
                         SemanticType::Function(params, ret) => {
-                            let mut resolved_ret =
-                                self.check_callable_signature(&params, *ret, &arg_types, expr.span);
+                            let mut resolved_ret = self.check_callable_signature(&params, *ret, &arg_types, expr.span);
                             if let KindExpr::Variable(var) = &call.callee.kind {
                                 if var.name == "print" && !arg_types.is_empty() {
                                     resolved_ret = arg_types[0].clone();
