@@ -37,7 +37,7 @@ impl SemanticAnalyzer {
             .params
             .iter()
             .map(|param| {
-                param
+                let base_type = param
                     .types
                     .as_ref()
                     .map(|type_ref| SemanticType::from_type_ref(type_ref))
@@ -46,7 +46,12 @@ impl SemanticAnalyzer {
                             .get(&param.name)
                             .cloned()
                             .unwrap_or(SemanticType::Unknown)
-                    })
+                    });
+                if param.is_variadic {
+                    SemanticType::Vector(Box::new(base_type))
+                } else {
+                    base_type
+                }
             })
             .collect::<Vec<_>>();
 
@@ -75,7 +80,7 @@ impl SemanticAnalyzer {
         );
 
         for param in &func.params {
-            let typ = param
+            let base_type = param
                 .types
                 .as_ref()
                 .map(|type_ref| self.resolve_type_ref(Some(type_ref), func.body.span))
@@ -85,6 +90,11 @@ impl SemanticAnalyzer {
                         .cloned()
                         .unwrap_or(SemanticType::Unknown)
                 });
+            let typ = if param.is_variadic {
+                SemanticType::Vector(Box::new(base_type))
+            } else {
+                base_type
+            };
             self.define_local(&param.name, SymbolKind::Variable, typ, func.body.span);
         }
 

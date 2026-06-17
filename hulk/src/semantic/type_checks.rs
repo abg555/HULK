@@ -29,6 +29,15 @@ impl SemanticAnalyzer {
             (SemanticType::Vector(expected_inner), SemanticType::Vector(actual_inner)) => {
                 self.is_compatible_type(expected_inner, actual_inner)
             }
+            (SemanticType::Vector(expected_inner), SemanticType::Custom(actual_name)) => {
+                // Check if actual_name implements Iterable and its current() returns expected_inner
+                if self.type_conforms_to_protocol(actual_name, "Iterable") {
+                    if let Some(element_ty) = self.iterable_element_type(actual_name) {
+                        return self.is_compatible_type(expected_inner, &element_ty);
+                    }
+                }
+                false
+            }
             (
                 SemanticType::Function(expected_params, expected_ret),
                 SemanticType::Function(actual_params, actual_ret),

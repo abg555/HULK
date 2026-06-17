@@ -335,10 +335,22 @@ impl<'ctx> CodeGenerator<'ctx> {
             return Err(format!("Simbolo {} no es funcion", func.name));
         };
 
-        let param_kinds = params
-            .iter()
-            .map(|typ| self.value_kind_from_declared_type(typ, analysis))
-            .collect::<Result<Vec<_>, _>>()?;
+        // Respect original AST variadic markers: if a parameter was declared
+        // variadic (T*), lower its ABI to `Object` so callers can pass either
+        // concrete objects implementing `Iterable` or actual vectors.
+        let mut param_kinds = Vec::with_capacity(params.len());
+        for (idx, typ) in params.iter().enumerate() {
+            let is_variadic = func
+                .params
+                .get(idx)
+                .map(|p| p.is_variadic)
+                .unwrap_or(false);
+            if is_variadic {
+                param_kinds.push(ValueKind::Object);
+            } else {
+                param_kinds.push(self.value_kind_from_declared_type(typ, analysis)?);
+            }
+        }
         let ret_kind = self.value_kind_from_declared_type(ret.as_ref(), analysis)?;
 
         Ok((param_kinds, ret_kind))
@@ -365,12 +377,14 @@ impl<'ctx> CodeGenerator<'ctx> {
 
         let mut param_kinds = Vec::with_capacity(params.len() + 1);
         param_kinds.push(ValueKind::Object);
-        param_kinds.extend(
-            params
-                .iter()
-                .map(|typ| self.value_kind_from_declared_type(typ, analysis))
-                .collect::<Result<Vec<_>, _>>()?,
-        );
+        for (idx, typ) in params.iter().enumerate() {
+            let is_variadic = method.params.get(idx).map(|p| p.is_variadic).unwrap_or(false);
+            if is_variadic {
+                param_kinds.push(ValueKind::Object);
+            } else {
+                param_kinds.push(self.value_kind_from_declared_type(typ, analysis)?);
+            }
+        }
 
         let ret_kind = self.value_kind_from_declared_type(ret.as_ref(), analysis)?;
 

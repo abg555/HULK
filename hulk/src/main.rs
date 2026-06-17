@@ -169,11 +169,8 @@ fn main() -> io::Result<()> {
     let mut generator = code_gen::CodeGenerator::with_source_dir(&context, &file_stem, input_path);
 
     // Pasamos el AST desazucarado en lugar del original
-    if generator
-        .codegen_program(&program_desugared, &semantic_context)
-        .is_err()
-    {
-        eprintln!("CODEGEN ERROR");
+    if let Err(e) = generator.codegen_program(&program_desugared, &semantic_context) {
+        eprintln!("CODEGEN ERROR: {}", e);
         process::exit(4);
     }
 

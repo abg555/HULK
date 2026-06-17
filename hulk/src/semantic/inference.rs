@@ -84,66 +84,31 @@ impl SemanticAnalyzer {
                                 &inferred,
                             )
                         };
-                        method_return_map.insert(method.name.clone(), ret);
+                        method_return_map.insert(method.name.clone(), ret.clone());
+                        if let Some(shape) = self.type_shapes.get_mut(&typ.name) {
+                            let params = method
+                                    .params
+                                    .iter()
+                                    .map(|param| {
+                                        param
+                                            .types
+                                            .as_ref()
+                                            .map(SemanticType::from_type_ref)
+                                            .unwrap_or_else(|| {
+                                                inferred
+                                                    .get(&param.name)
+                                                    .cloned()
+                                                    .unwrap_or(SemanticType::Unknown)
+                                            })
+                                    })
+                                    .collect::<Vec<_>>();
+                                shape.methods.insert(method.name.clone(), SemanticType::Function(params, Box::new(ret)));
+                        }
                     }
                     self.inferred_method_params
                         .insert(typ.name.clone(), method_map.clone());
                     self.inferred_method_returns
                         .insert(typ.name.clone(), method_return_map.clone());
-
-                    let mut method_sigs = Vec::new();
-                    for method in &typ.methods {
-                        let inferred = method_map.get(&method.name).cloned().unwrap_or_default();
-                        let params = method
-                            .params
-                            .iter()
-                            .map(|param| {
-                                param
-                                    .types
-                                    .as_ref()
-                                    .map(SemanticType::from_type_ref)
-                                    .unwrap_or_else(|| {
-                                        inferred
-                                            .get(&param.name)
-                                            .cloned()
-                                            .unwrap_or(SemanticType::Unknown)
-                                    })
-                            })
-                            .collect::<Vec<_>>();
-                        let ret = method_return_map
-                            .get(&method.name)
-                            .cloned()
-                            .unwrap_or(SemanticType::Unknown);
-                        method_sigs.push((
-                            method.name.clone(),
-                            SemanticType::Function(params, Box::new(ret)),
-                        ));
-                    }
-
-                    if let Some(shape) = self.type_shapes.get_mut(&typ.name) {
-                        shape.ctor_params = typ
-                            .param
-                            .iter()
-                            .map(|param| {
-                                param
-                                    .types
-                                    .as_ref()
-                                    .map(SemanticType::from_type_ref)
-                                    .unwrap_or_else(|| {
-                                        inferred_type_params
-                                            .get(&param.name)
-                                            .cloned()
-                                            .unwrap_or(SemanticType::Unknown)
-                                    })
-                            })
-                            .collect();
-                        shape.ctor_param_names =
-                            typ.param.iter().map(|param| param.name.clone()).collect();
-
-                        for (method_name, method_type) in method_sigs {
-                            shape.methods.insert(method_name, method_type);
-                        }
-                    }
 
                     self.current_type_context = prev_type_context;
                 }

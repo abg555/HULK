@@ -276,7 +276,14 @@ impl SemanticAnalyzer {
                     let params = func
                         .params
                         .iter()
-                        .map(|p| self.resolve_type_ref_silent(p.types.as_ref()))
+                        .map(|p| {
+                            let base_type = self.resolve_type_ref_silent(p.types.as_ref());
+                            if p.is_variadic {
+                                SemanticType::Vector(Box::new(base_type))
+                            } else {
+                                base_type
+                            }
+                        })
                         .collect::<Vec<_>>();
                     let ret = func
                         .return_type

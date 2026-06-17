@@ -1018,6 +1018,45 @@ impl<'ctx> CodeGenerator<'ctx> {
         }
     }
 
+    /// Determine an effective runtime return kind for a protocol method.
+    /// If all concrete types implementing the protocol return the same
+    /// `ValueKind` for `method_name`, that kind is returned. Otherwise we
+    /// fall back to the protocol-declared return kind.
+    pub(super) fn effective_protocol_method_return_kind(
+        &self,
+        protocol_name: &str,
+        method_name: &str,
+        analysis: &SemanticAnalysis,
+    ) -> Result<ValueKind, String> {
+        let proto_ret = self.protocol_method_return_kind(protocol_name, method_name, analysis)?;
+        let conforming = self.types_conforming_to_protocol(protocol_name, analysis);
+        if conforming.is_empty() {
+            return Ok(proto_ret);
+        }
+
+        let mut concrete_ret: Option<ValueKind> = None;
+        for type_name in &conforming {
+            let owner = match self.object_method_owner(type_name, method_name, analysis) {
+                Ok(o) => o,
+                Err(_) => return Ok(proto_ret),
+            };
+            let symbol = self.method_symbol_name(&owner, method_name);
+            let info = match self.get_function(&symbol) {
+                Some(i) => i,
+                None => return Ok(proto_ret),
+            };
+            if let Some(existing) = concrete_ret {
+                if existing != info.ret {
+                    return Ok(proto_ret);
+                }
+            } else {
+                concrete_ret = Some(info.ret);
+            }
+        }
+
+        Ok(concrete_ret.unwrap_or(proto_ret))
+    }
+
     /// Dispatch vtable generico: emite una llamada indirecta via vtable al metodo
     /// `method_name` del tipo concreto `type_name`, pasando `receiver` como self
     /// y `extra_args` como argumentos adicionales.
@@ -1127,7 +1166,7 @@ impl<'ctx> CodeGenerator<'ctx> {
             ));
         }
 
-        let ret_kind = self.protocol_method_return_kind(protocol_name, method_name, analysis)?;
+        let ret_kind = self.effective_protocol_method_return_kind(protocol_name, method_name, analysis)?;
 
         let type_id = {
             let anchor = conforming[0].clone();

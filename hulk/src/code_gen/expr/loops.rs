@@ -177,7 +177,55 @@ impl<'ctx> CodeGenerator<'ctx> {
         function: inkwell::values::FunctionValue<'ctx>,
         analysis: &SemanticAnalysis,
     ) -> Result<CodegenValue<'ctx>, String> {
+        // Evaluate iterable once.
         let iterable_value = self.lower_expr(&for_expr.iterable, analysis)?;
+
+        // If at runtime we got an object, prefer protocol-based iteration
+        // (Iterable) so we don't rely on brittle AST heuristics to recover
+        // a concrete type name for variables passed as Vector parameters.
+        if let CodegenValue::Object(obj_ptr) = iterable_value {
+            let iterable_slot = self.alloca_for_kind(&ValueKind::Object, "for_obj_iter")?;
+            self.store_value(iterable_slot, CodegenValue::Object(obj_ptr))?;
+
+            // If the static inferred type names a Custom type, and it's not a
+            // protocol, we can try concrete dispatch; otherwise fall back to
+            // protocol dispatch on Iterable.
+            if let Some(SemanticType::Custom(type_name)) =
+                analysis.inferred_types.get(&for_expr.iterable.id)
+            {
+                if self.is_protocol_name(type_name, analysis) {
+                    return self.lower_for_object_protocol(
+                        for_expr,
+                        result_kind,
+                        result_ptr,
+                        function,
+                        analysis,
+                        type_name,
+                        iterable_slot,
+                    );
+                } else {
+                    return self.lower_for_object(
+                        for_expr,
+                        result_kind,
+                        result_ptr,
+                        function,
+                        analysis,
+                        type_name.clone(),
+                    );
+                }
+            }
+
+            return self.lower_for_object_protocol(
+                for_expr,
+                result_kind,
+                result_ptr,
+                function,
+                analysis,
+                "Iterable",
+                iterable_slot,
+            );
+        }
+
         let vec_ptr = iterable_value.into_vector().map_err(|_| {
             "Codegen de for solo soporta iterables vectoriales y range(start, end)".to_string()
         })?;
@@ -338,7 +386,8 @@ impl<'ctx> CodeGenerator<'ctx> {
         protocol_name: &str,
         iterable_slot: inkwell::values::PointerValue<'ctx>,
     ) -> Result<CodegenValue<'ctx>, String> {
-        let elem_kind = self.protocol_method_return_kind(protocol_name, "current", analysis)?;
+        let elem_kind = self
+            .effective_protocol_method_return_kind(protocol_name, "current", analysis)?;
 
         let cond_block = self.context.append_basic_block(function, "for_cond");
         let body_block = self.context.append_basic_block(function, "for_body");
