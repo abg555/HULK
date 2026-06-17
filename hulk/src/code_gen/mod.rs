@@ -1,8 +1,8 @@
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::Module;
-use inkwell::types::{BasicTypeEnum, FloatType, IntType, StructType};
 use inkwell::types::BasicType;
+use inkwell::types::{BasicTypeEnum, FloatType, IntType, StructType};
 use inkwell::values::{FloatValue, GlobalValue, IntValue, PointerValue};
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -172,6 +172,15 @@ impl<'ctx> CodeGenerator<'ctx> {
         }
     }
 
+    pub fn with_source_dir(
+        context: &'ctx Context,
+        module_name: &str,
+        _source_path: &std::path::Path,
+    ) -> Self {
+        // Currently just delegates to new() - source_path could be used for debug info in future
+        Self::new(context, module_name)
+    }
+
     pub fn module(&self) -> &Module<'ctx> {
         &self.module
     }
@@ -203,13 +212,7 @@ impl<'ctx> CodeGenerator<'ctx> {
             })
             .collect::<Vec<_>>();
 
-        let fn_type = if let Some(last_expr) = global_exprs.last() {
-            let value_kind = self.value_kind_for_expr(last_expr, analysis)?;
-            self.basic_type_for_kind(&value_kind)?.fn_type(&[], false)
-        } else {
-            self.f64_type.fn_type(&[], false)
-        };
-
+        let fn_type = self.context.i32_type().fn_type(&[], false);
         let function = self.module.add_function("main", fn_type, None);
         let block = self.context.append_basic_block(function, "entry");
 
@@ -220,33 +223,13 @@ impl<'ctx> CodeGenerator<'ctx> {
                 let _ = self.lower_expr(expr, analysis)?;
             }
 
-            let value = self.lower_expr(last_expr, analysis)?;
-            match value {
-                CodegenValue::Number(number) => {
-                    self.builder
-                        .build_return(Some(&number))
-                        .map_err(|e| e.to_string())?;
-                }
-                CodegenValue::Bool(boolean) => {
-                    self.builder
-                        .build_return(Some(&boolean))
-                        .map_err(|e| e.to_string())?;
-                }
-                CodegenValue::String(string)
-                | CodegenValue::Object(string)
-                | CodegenValue::Vector(string)
-                | CodegenValue::Closure(string) => {
-                    self.builder
-                        .build_return(Some(&string))
-                        .map_err(|e| e.to_string())?;
-                }
-            }
-        } else {
-            let number = self.f64_type.const_float(0.0);
-            self.builder
-                .build_return(Some(&number))
-                .map_err(|e| e.to_string())?;
+            let _ = self.lower_expr(last_expr, analysis)?;
         }
+
+        let zero = self.context.i32_type().const_int(0, false);
+        self.builder
+            .build_return(Some(&zero))
+            .map_err(|e| e.to_string())?;
 
         Ok(())
     }
@@ -280,13 +263,24 @@ impl<'ctx> CodeGenerator<'ctx> {
         }
 
         let path = format!("{}.hulk", module.replace('.', "/"));
-        let source = fs::read_to_string(&path)
-            .map_err(|e| format!("No se pudo leer modulo importado {} ({}): {}", module, path, e))?;
-        let program = crate::parse_program(&source)
-            .map_err(|diags| format!("No se pudo parsear modulo importado {}: {:?}", module, diags))?;
-        let analysis = SemanticAnalyzer::new()
-            .analyze(&program)
-            .map_err(|diags| format!("No se pudo analizar modulo importado {}: {:?}", module, diags))?;
+        let source = fs::read_to_string(&path).map_err(|e| {
+            format!(
+                "No se pudo leer modulo importado {} ({}): {}",
+                module, path, e
+            )
+        })?;
+        let program = crate::parse_program(&source).map_err(|diags| {
+            format!(
+                "No se pudo parsear modulo importado {}: {:?}",
+                module, diags
+            )
+        })?;
+        let analysis = SemanticAnalyzer::new().analyze(&program).map_err(|diags| {
+            format!(
+                "No se pudo analizar modulo importado {}: {:?}",
+                module, diags
+            )
+        })?;
 
         for item in &program.items {
             let Item::Import(import_decl) = item else {
@@ -351,7 +345,10 @@ impl<'ctx> CodeGenerator<'ctx> {
         format!("{}.{}", type_name, method_name)
     }
 
-    pub(super) fn prepare_object_types(&mut self, analysis: &SemanticAnalysis) -> Result<(), String> {
+    pub(super) fn prepare_object_types(
+        &mut self,
+        analysis: &SemanticAnalysis,
+    ) -> Result<(), String> {
         self.struct_types.clear();
 
         for name in self.type_decls.keys() {
@@ -421,7 +418,9 @@ impl<'ctx> CodeGenerator<'ctx> {
             }
 
             let vtable_value = vtable_type.const_named_struct(&values);
-            let global = self.module.add_global(vtable_type, None, &format!("vtable.{}", name));
+            let global = self
+                .module
+                .add_global(vtable_type, None, &format!("vtable.{}", name));
             global.set_initializer(&vtable_value);
             global.set_constant(true);
             self.vtable_globals.insert(name, global);
@@ -446,7 +445,9 @@ impl<'ctx> CodeGenerator<'ctx> {
             fields.push(i8_ptr_type.into());
         }
 
-        let struct_type = self.context.opaque_struct_type(&format!("vtable.{}", type_name));
+        let struct_type = self
+            .context
+            .opaque_struct_type(&format!("vtable.{}", type_name));
         struct_type.set_body(&fields, false);
         self.vtable_types.insert(type_name.to_string(), struct_type);
         struct_type
@@ -486,11 +487,16 @@ impl<'ctx> CodeGenerator<'ctx> {
             }
         }
 
-        self.method_orders.insert(type_name.to_string(), order.clone());
+        self.method_orders
+            .insert(type_name.to_string(), order.clone());
         Ok(order)
     }
 
-    pub(super) fn method_slot(&mut self, type_name: &str, method_name: &str) -> Result<usize, String> {
+    pub(super) fn method_slot(
+        &mut self,
+        type_name: &str,
+        method_name: &str,
+    ) -> Result<usize, String> {
         let order = self.method_order_for_type(type_name)?;
         order
             .iter()
@@ -580,11 +586,17 @@ impl<'ctx> CodeGenerator<'ctx> {
             SemanticType::Custom(_) => Ok(ValueKind::Object),
             SemanticType::Vector(_) => Ok(ValueKind::Vector),
             SemanticType::Function(_, _) => Ok(ValueKind::Closure),
-            _ => Err(format!("Tipo no soportado en codegen: {:?} -> {}", expr.id, kind)),
+            _ => Err(format!(
+                "Tipo no soportado en codegen: {:?} -> {}",
+                expr.id, kind
+            )),
         }
     }
 
-    pub(super) fn default_value_for_kind(&self, kind: ValueKind) -> Result<CodegenValue<'ctx>, String> {
+    pub(super) fn default_value_for_kind(
+        &self,
+        kind: ValueKind,
+    ) -> Result<CodegenValue<'ctx>, String> {
         match kind {
             ValueKind::Number => Ok(CodegenValue::Number(self.f64_type.const_float(0.0))),
             ValueKind::Bool => Ok(CodegenValue::Bool(self.bool_type.const_int(0, false))),
@@ -622,22 +634,19 @@ impl<'ctx> CodeGenerator<'ctx> {
         match kind {
             ValueKind::Number => Ok(self.f64_type.into()),
             ValueKind::Bool => Ok(self.bool_type.into()),
-            ValueKind::String | ValueKind::Object => Ok(
-                self.context
-                    .i8_type()
-                    .ptr_type(inkwell::AddressSpace::default())
-                    .into(),
-            ),
-            ValueKind::Vector => Ok(
-                self.vector_struct
-                    .ptr_type(inkwell::AddressSpace::default())
-                    .into(),
-            ),
-            ValueKind::Closure => Ok(
-                self.closure_struct
-                    .ptr_type(inkwell::AddressSpace::default())
-                    .into(),
-            ),
+            ValueKind::String | ValueKind::Object => Ok(self
+                .context
+                .i8_type()
+                .ptr_type(inkwell::AddressSpace::default())
+                .into()),
+            ValueKind::Vector => Ok(self
+                .vector_struct
+                .ptr_type(inkwell::AddressSpace::default())
+                .into()),
+            ValueKind::Closure => Ok(self
+                .closure_struct
+                .ptr_type(inkwell::AddressSpace::default())
+                .into()),
         }
     }
 
@@ -648,28 +657,24 @@ impl<'ctx> CodeGenerator<'ctx> {
         match typ {
             SemanticType::Number => Ok(self.f64_type.into()),
             SemanticType::Boolean => Ok(self.bool_type.into()),
-            SemanticType::String => Ok(
-                self.context
-                    .i8_type()
-                    .ptr_type(inkwell::AddressSpace::default())
-                    .into(),
-            ),
-            SemanticType::Custom(_) => Ok(
-                self.context
-                    .i8_type()
-                    .ptr_type(inkwell::AddressSpace::default())
-                    .into(),
-            ),
-            SemanticType::Vector(_) => Ok(
-                self.vector_struct
-                    .ptr_type(inkwell::AddressSpace::default())
-                    .into(),
-            ),
-            SemanticType::Function(_, _) => Ok(
-                self.closure_struct
-                    .ptr_type(inkwell::AddressSpace::default())
-                    .into(),
-            ),
+            SemanticType::String => Ok(self
+                .context
+                .i8_type()
+                .ptr_type(inkwell::AddressSpace::default())
+                .into()),
+            SemanticType::Custom(_) => Ok(self
+                .context
+                .i8_type()
+                .ptr_type(inkwell::AddressSpace::default())
+                .into()),
+            SemanticType::Vector(_) => Ok(self
+                .vector_struct
+                .ptr_type(inkwell::AddressSpace::default())
+                .into()),
+            SemanticType::Function(_, _) => Ok(self
+                .closure_struct
+                .ptr_type(inkwell::AddressSpace::default())
+                .into()),
             _ => Err(format!("Tipo no soportado en codegen: {}", typ)),
         }
     }
@@ -708,7 +713,8 @@ impl<'ctx> CodeGenerator<'ctx> {
     ) -> Result<Vec<BasicTypeEnum<'ctx>>, String> {
         let mut field_types = Vec::new();
         for field_name in self.object_field_names(type_name)? {
-            let semantic_type = self.object_field_semantic_type(type_name, &field_name, analysis)?;
+            let semantic_type =
+                self.object_field_semantic_type(type_name, &field_name, analysis)?;
             field_types.push(self.basic_type_for_semantic(&semantic_type)?);
         }
 
@@ -738,7 +744,10 @@ impl<'ctx> CodeGenerator<'ctx> {
             return self.object_field_semantic_type(&parent_name, field_name, analysis);
         }
 
-        Err(format!("No se encontro el tipo del campo {} en {}", field_name, type_name))
+        Err(format!(
+            "No se encontro el tipo del campo {} en {}",
+            field_name, type_name
+        ))
     }
 
     pub(super) fn object_method_owner(
@@ -795,7 +804,9 @@ impl<'ctx> CodeGenerator<'ctx> {
         name: &str,
     ) -> Result<PointerValue<'ctx>, String> {
         let ty = self.basic_type_for_kind(kind)?;
-        self.builder.build_alloca(ty, name).map_err(|e| e.to_string())
+        self.builder
+            .build_alloca(ty, name)
+            .map_err(|e| e.to_string())
     }
 
     pub(super) fn load_value(
@@ -818,7 +829,10 @@ impl<'ctx> CodeGenerator<'ctx> {
                     .into_int_value(),
             )),
             ValueKind::String => {
-                let i8_ptr_type = self.context.i8_type().ptr_type(inkwell::AddressSpace::default());
+                let i8_ptr_type = self
+                    .context
+                    .i8_type()
+                    .ptr_type(inkwell::AddressSpace::default());
                 Ok(CodegenValue::String(
                     self.builder
                         .build_load(i8_ptr_type, ptr, name)
@@ -827,7 +841,10 @@ impl<'ctx> CodeGenerator<'ctx> {
                 ))
             }
             ValueKind::Object => {
-                let i8_ptr_type = self.context.i8_type().ptr_type(inkwell::AddressSpace::default());
+                let i8_ptr_type = self
+                    .context
+                    .i8_type()
+                    .ptr_type(inkwell::AddressSpace::default());
                 Ok(CodegenValue::Object(
                     self.builder
                         .build_load(i8_ptr_type, ptr, name)
@@ -899,10 +916,7 @@ impl<'ctx> CodeGenerator<'ctx> {
         }
     }
 
-    pub(super) fn value_kind_from_semantic(
-        &self,
-        typ: &SemanticType,
-    ) -> Result<ValueKind, String> {
+    pub(super) fn value_kind_from_semantic(&self, typ: &SemanticType) -> Result<ValueKind, String> {
         match typ {
             SemanticType::Number => Ok(ValueKind::Number),
             SemanticType::Boolean => Ok(ValueKind::Bool),
@@ -1113,8 +1127,7 @@ impl<'ctx> CodeGenerator<'ctx> {
             ));
         }
 
-        let ret_kind =
-            self.protocol_method_return_kind(protocol_name, method_name, analysis)?;
+        let ret_kind = self.protocol_method_return_kind(protocol_name, method_name, analysis)?;
 
         let type_id = {
             let anchor = conforming[0].clone();
@@ -1157,13 +1170,9 @@ impl<'ctx> CodeGenerator<'ctx> {
             .and_then(|b| b.get_parent())
             .ok_or_else(|| "No hay funcion activa para dispatch de protocolo".to_string())?;
 
-        let after_block = self
-            .context
-            .append_basic_block(function, "proto_after");
+        let after_block = self.context.append_basic_block(function, "proto_after");
 
-        let mut cur_block = self
-            .context
-            .append_basic_block(function, "proto_dispatch");
+        let mut cur_block = self.context.append_basic_block(function, "proto_dispatch");
         self.builder
             .build_unconditional_branch(cur_block)
             .map_err(|e| e.to_string())?;
@@ -1198,13 +1207,8 @@ impl<'ctx> CodeGenerator<'ctx> {
                 .cloned()
                 .ok_or_else(|| format!("Metodo no encontrado: {}", symbol))?;
 
-            let result = self.emit_vtable_call(
-                receiver,
-                type_name,
-                method_name,
-                &info,
-                extra_args,
-            )?;
+            let result =
+                self.emit_vtable_call(receiver, type_name, method_name, &info, extra_args)?;
             let coerced = self.coerce_value_to_kind(result, ret_kind)?;
             self.store_value(result_ptr, coerced)?;
             self.builder
@@ -1230,7 +1234,9 @@ impl<'ctx> CodeGenerator<'ctx> {
         self.builder
             .build_call(panic_fn, &[msg.as_pointer_value().into()], "proto_panic")
             .map_err(|e| e.to_string())?;
-        self.builder.build_unreachable().map_err(|e| e.to_string())?;
+        self.builder
+            .build_unreachable()
+            .map_err(|e| e.to_string())?;
 
         self.builder.position_at_end(after_block);
         self.load_value(&ret_kind, result_ptr, "proto_result_load")
@@ -1250,10 +1256,7 @@ impl<'ctx> CodeGenerator<'ctx> {
             return Ok(value);
         }
 
-        let i8_ptr = self
-            .context
-            .i8_type()
-            .ptr_type(AddressSpace::default());
+        let i8_ptr = self.context.i8_type().ptr_type(AddressSpace::default());
 
         match (value, target) {
             (CodegenValue::String(p), ValueKind::Object) => Ok(CodegenValue::Object(p)),

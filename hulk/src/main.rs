@@ -101,7 +101,7 @@ fn main() -> io::Result<()> {
     // =========================
     println!("=== MACRO EXPAND ===");
 
-   let expanded_ast = match semantic::macro_expander::expand_program(program_ast) {
+    let expanded_ast = match semantic::macro_expander::expand_program(program_ast) {
         Ok(ast) => ast,
         Err(diagnostics) => {
             eprintln!("(1,1) SEMANTIC: Error expandiendo macros:");
@@ -118,7 +118,6 @@ fn main() -> io::Result<()> {
     println!("=== SEMANTIC ===");
 
     let mut analyzer = semantic::SemanticAnalyzer::new();
-
 
     let initial_context = match analyzer.analyze(&expanded_ast) {
         Ok(ctx) => ctx,
