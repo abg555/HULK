@@ -33,9 +33,11 @@ pub fn lex_safe(input: &str) -> Result<Vec<lexer::Token>, String> {
     }
 
     let tokens = lexer::remove_double_pipe_tokens(tokens);
+    // 1. Envolver los IFs después de operadores binarios inmediatamente para proteger la aritmética
+    let tokens = lexer::wrap_inline_if_after_binary_ops(tokens);
+    // 2. Ejecutar el resto de transformaciones sintácticas complejas
     let tokens = lexer::add_lambda_tokens(tokens);
     let tokens = lexer::fix_list_comprehension_pipe(tokens);
-    let tokens = lexer::wrap_inline_if_after_binary_ops(tokens);
     let tokens = lexer::mark_macro_block_calls(tokens);
 
     Ok(tokens)

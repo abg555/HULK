@@ -178,7 +178,7 @@ impl<'ctx> CodeGenerator<'ctx> {
         }
     }
 
-    pub(super) fn get_panic_function(&self) -> inkwell::values::FunctionValue<'ctx> {
+    pub(in crate::code_gen) fn get_panic_function(&self) -> inkwell::values::FunctionValue<'ctx> {
         if let Some(function) = self.module.get_function("hulk_panic") {
             return function;
         }
@@ -461,7 +461,7 @@ impl<'ctx> CodeGenerator<'ctx> {
         Ok(index + 1)
     }
 
-    pub(super) fn cast_object_ptr(
+    pub(in crate::code_gen) fn cast_object_ptr(
         &self,
         object_value: &PointerValue<'ctx>,
         type_name: &str,

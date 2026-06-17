@@ -1,189 +1,224 @@
 ; ModuleID = 'tests'
 source_filename = "tests"
 
-%vtable.Bike = type { i64, ptr, ptr }
-%vtable.Car = type { i64, ptr, ptr }
-%vtable.Vehicle = type { i64, ptr, ptr }
-%obj.Vehicle = type { ptr, double }
-%obj.Car = type { ptr, double, double }
-%obj.Bike = type { ptr, double }
+%vtable.Temperature = type { i64, ptr }
+%obj.Temperature = type { ptr, double }
 
-@vtable.Bike = constant %vtable.Bike { i64 0, ptr @Bike.move, ptr @Vehicle.max_speed }
-@vtable.Car = constant %vtable.Car { i64 1, ptr @Car.move, ptr @Vehicle.max_speed }
-@vtable.Vehicle = constant %vtable.Vehicle { i64 2, ptr @Vehicle.move, ptr @Vehicle.max_speed }
-@str = private unnamed_addr constant [7 x i8] c"moving\00", align 1
-@str.1 = private unnamed_addr constant [8 x i8] c"driving\00", align 1
-@str.2 = private unnamed_addr constant [8 x i8] c"cycling\00", align 1
-@str.3 = private unnamed_addr constant [8 x i8] c"driving\00", align 1
-@str.4 = private unnamed_addr constant [3 x i8] c"ok\00", align 1
+@vtable.Temperature = constant %vtable.Temperature { i64 0, ptr @Temperature.value }
+@proto_panic_msg_0 = private unnamed_addr constant [68 x i8] c"Runtime error: tipo desconocido en dispatch de protocolo Comparable\00", align 1
+@proto_panic_msg_1 = private unnamed_addr constant [68 x i8] c"Runtime error: tipo desconocido en dispatch de protocolo Comparable\00", align 1
+@proto_panic_msg_2 = private unnamed_addr constant [68 x i8] c"Runtime error: tipo desconocido en dispatch de protocolo Comparable\00", align 1
+@proto_panic_msg_3 = private unnamed_addr constant [68 x i8] c"Runtime error: tipo desconocido en dispatch de protocolo Comparable\00", align 1
+@str = private unnamed_addr constant [3 x i8] c"ok\00", align 1
 @print_fmt_str = private unnamed_addr constant [4 x i8] c"%s\0A\00", align 1
+@str.1 = private unnamed_addr constant [5 x i8] c"fail\00", align 1
+@print_fmt_str.2 = private unnamed_addr constant [4 x i8] c"%s\0A\00", align 1
+@str.3 = private unnamed_addr constant [3 x i8] c"ok\00", align 1
+@print_fmt_str.4 = private unnamed_addr constant [4 x i8] c"%s\0A\00", align 1
 @str.5 = private unnamed_addr constant [5 x i8] c"fail\00", align 1
 @print_fmt_str.6 = private unnamed_addr constant [4 x i8] c"%s\0A\00", align 1
-@str.7 = private unnamed_addr constant [3 x i8] c"ok\00", align 1
-@print_fmt_str.8 = private unnamed_addr constant [4 x i8] c"%s\0A\00", align 1
-@str.9 = private unnamed_addr constant [5 x i8] c"fail\00", align 1
-@print_fmt_str.10 = private unnamed_addr constant [4 x i8] c"%s\0A\00", align 1
-@str.11 = private unnamed_addr constant [8 x i8] c"cycling\00", align 1
-@str.12 = private unnamed_addr constant [3 x i8] c"ok\00", align 1
-@print_fmt_str.13 = private unnamed_addr constant [4 x i8] c"%s\0A\00", align 1
-@str.14 = private unnamed_addr constant [5 x i8] c"fail\00", align 1
-@print_fmt_str.15 = private unnamed_addr constant [4 x i8] c"%s\0A\00", align 1
-@str.16 = private unnamed_addr constant [3 x i8] c"ok\00", align 1
-@print_fmt_str.17 = private unnamed_addr constant [4 x i8] c"%s\0A\00", align 1
-@str.18 = private unnamed_addr constant [5 x i8] c"fail\00", align 1
-@print_fmt_str.19 = private unnamed_addr constant [4 x i8] c"%s\0A\00", align 1
 
-define ptr @Vehicle.move(ptr %self) {
+define double @max_comp(ptr %a, ptr %b) {
 entry:
-  %self1 = alloca ptr, align 8
-  store ptr %self, ptr %self1, align 8
-  ret ptr @str
+  %a1 = alloca ptr, align 8
+  store ptr %a, ptr %a1, align 8
+  %b2 = alloca ptr, align 8
+  store ptr %b, ptr %b2, align 8
+  %load_a = load ptr, ptr %a1, align 8
+  %proto_vtable_slot = getelementptr inbounds %obj.Temperature, ptr %load_a, i32 0, i32 0
+  %proto_vtable_ptr = load ptr, ptr %proto_vtable_slot, align 8
+  %proto_type_id = load i64, ptr %proto_vtable_ptr, align 4
+  %proto_result = alloca double, align 8
+  store double 0.000000e+00, ptr %proto_result, align 8
+  br label %proto_dispatch
+
+proto_after:                                      ; preds = %proto_match_Temperature
+  %proto_result_load = load double, ptr %proto_result, align 8
+  %load_b = load ptr, ptr %b2, align 8
+  %proto_vtable_slot3 = getelementptr inbounds %obj.Temperature, ptr %load_b, i32 0, i32 0
+  %proto_vtable_ptr4 = load ptr, ptr %proto_vtable_slot3, align 8
+  %proto_type_id5 = load i64, ptr %proto_vtable_ptr4, align 4
+  %proto_result6 = alloca double, align 8
+  store double 0.000000e+00, ptr %proto_result6, align 8
+  br label %proto_dispatch8
+
+proto_dispatch:                                   ; preds = %entry
+  %proto_cmp = icmp eq i64 %proto_type_id, 0
+  br i1 %proto_cmp, label %proto_match_Temperature, label %proto_next_Temperature
+
+proto_match_Temperature:                          ; preds = %proto_dispatch
+  %vtable_slot = getelementptr inbounds %obj.Temperature, ptr %load_a, i32 0, i32 0
+  %vtable_load = load ptr, ptr %vtable_slot, align 8
+  %method_slot = getelementptr inbounds %vtable.Temperature, ptr %vtable_load, i32 0, i32 1
+  %method_load = load ptr, ptr %method_slot, align 8
+  %call_vtable = call double %method_load(ptr %load_a)
+  store double %call_vtable, ptr %proto_result, align 8
+  br label %proto_after
+
+proto_next_Temperature:                           ; preds = %proto_dispatch
+  call void @hulk_panic(ptr @proto_panic_msg_0)
+  unreachable
+
+proto_after7:                                     ; preds = %proto_match_Temperature10
+  %proto_result_load17 = load double, ptr %proto_result6, align 8
+  %cmptmp = fcmp oge double %proto_result_load, %proto_result_load17
+  br i1 %cmptmp, label %if_then, label %if_else
+
+proto_dispatch8:                                  ; preds = %proto_after
+  %proto_cmp9 = icmp eq i64 %proto_type_id5, 0
+  br i1 %proto_cmp9, label %proto_match_Temperature10, label %proto_next_Temperature11
+
+proto_match_Temperature10:                        ; preds = %proto_dispatch8
+  %vtable_slot12 = getelementptr inbounds %obj.Temperature, ptr %load_b, i32 0, i32 0
+  %vtable_load13 = load ptr, ptr %vtable_slot12, align 8
+  %method_slot14 = getelementptr inbounds %vtable.Temperature, ptr %vtable_load13, i32 0, i32 1
+  %method_load15 = load ptr, ptr %method_slot14, align 8
+  %call_vtable16 = call double %method_load15(ptr %load_b)
+  store double %call_vtable16, ptr %proto_result6, align 8
+  br label %proto_after7
+
+proto_next_Temperature11:                         ; preds = %proto_dispatch8
+  call void @hulk_panic(ptr @proto_panic_msg_1)
+  unreachable
+
+if_then:                                          ; preds = %proto_after7
+  %load_a18 = load ptr, ptr %a1, align 8
+  %proto_vtable_slot19 = getelementptr inbounds %obj.Temperature, ptr %load_a18, i32 0, i32 0
+  %proto_vtable_ptr20 = load ptr, ptr %proto_vtable_slot19, align 8
+  %proto_type_id21 = load i64, ptr %proto_vtable_ptr20, align 4
+  %proto_result22 = alloca double, align 8
+  store double 0.000000e+00, ptr %proto_result22, align 8
+  br label %proto_dispatch24
+
+if_else:                                          ; preds = %proto_after7
+  %load_b34 = load ptr, ptr %b2, align 8
+  %proto_vtable_slot35 = getelementptr inbounds %obj.Temperature, ptr %load_b34, i32 0, i32 0
+  %proto_vtable_ptr36 = load ptr, ptr %proto_vtable_slot35, align 8
+  %proto_type_id37 = load i64, ptr %proto_vtable_ptr36, align 4
+  %proto_result38 = alloca double, align 8
+  store double 0.000000e+00, ptr %proto_result38, align 8
+  br label %proto_dispatch40
+
+if_merge:                                         ; preds = %proto_after39, %proto_after23
+  %iftmp = phi double [ %proto_result_load33, %proto_after23 ], [ %proto_result_load49, %proto_after39 ]
+  ret double %iftmp
+
+proto_after23:                                    ; preds = %proto_match_Temperature26
+  %proto_result_load33 = load double, ptr %proto_result22, align 8
+  br label %if_merge
+
+proto_dispatch24:                                 ; preds = %if_then
+  %proto_cmp25 = icmp eq i64 %proto_type_id21, 0
+  br i1 %proto_cmp25, label %proto_match_Temperature26, label %proto_next_Temperature27
+
+proto_match_Temperature26:                        ; preds = %proto_dispatch24
+  %vtable_slot28 = getelementptr inbounds %obj.Temperature, ptr %load_a18, i32 0, i32 0
+  %vtable_load29 = load ptr, ptr %vtable_slot28, align 8
+  %method_slot30 = getelementptr inbounds %vtable.Temperature, ptr %vtable_load29, i32 0, i32 1
+  %method_load31 = load ptr, ptr %method_slot30, align 8
+  %call_vtable32 = call double %method_load31(ptr %load_a18)
+  store double %call_vtable32, ptr %proto_result22, align 8
+  br label %proto_after23
+
+proto_next_Temperature27:                         ; preds = %proto_dispatch24
+  call void @hulk_panic(ptr @proto_panic_msg_2)
+  unreachable
+
+proto_after39:                                    ; preds = %proto_match_Temperature42
+  %proto_result_load49 = load double, ptr %proto_result38, align 8
+  br label %if_merge
+
+proto_dispatch40:                                 ; preds = %if_else
+  %proto_cmp41 = icmp eq i64 %proto_type_id37, 0
+  br i1 %proto_cmp41, label %proto_match_Temperature42, label %proto_next_Temperature43
+
+proto_match_Temperature42:                        ; preds = %proto_dispatch40
+  %vtable_slot44 = getelementptr inbounds %obj.Temperature, ptr %load_b34, i32 0, i32 0
+  %vtable_load45 = load ptr, ptr %vtable_slot44, align 8
+  %method_slot46 = getelementptr inbounds %vtable.Temperature, ptr %vtable_load45, i32 0, i32 1
+  %method_load47 = load ptr, ptr %method_slot46, align 8
+  %call_vtable48 = call double %method_load47(ptr %load_b34)
+  store double %call_vtable48, ptr %proto_result38, align 8
+  br label %proto_after39
+
+proto_next_Temperature43:                         ; preds = %proto_dispatch40
+  call void @hulk_panic(ptr @proto_panic_msg_3)
+  unreachable
 }
 
-define double @Vehicle.max_speed(ptr %self) {
+define double @Temperature.value(ptr %self) {
 entry:
   %self1 = alloca ptr, align 8
   store ptr %self, ptr %self1, align 8
   %load_self = load ptr, ptr %self1, align 8
-  %speed_field = getelementptr inbounds %obj.Vehicle, ptr %load_self, i32 0, i32 1
-  %load_speed = load double, ptr %speed_field, align 8
-  ret double %load_speed
+  %deg_field = getelementptr inbounds %obj.Temperature, ptr %load_self, i32 0, i32 1
+  %load_deg = load double, ptr %deg_field, align 8
+  ret double %load_deg
 }
 
-define ptr @Car.move(ptr %self) {
-entry:
-  %self1 = alloca ptr, align 8
-  store ptr %self, ptr %self1, align 8
-  ret ptr @str.1
-}
-
-define ptr @Bike.move(ptr %self) {
-entry:
-  %self1 = alloca ptr, align 8
-  store ptr %self, ptr %self1, align 8
-  ret ptr @str.2
-}
+declare void @hulk_panic(ptr)
 
 define ptr @main() {
 entry:
-  %obj_alloc = call ptr @malloc(i64 ptrtoint (ptr getelementptr (%obj.Car, ptr null, i32 1) to i64))
-  %vtable_slot = getelementptr inbounds %obj.Car, ptr %obj_alloc, i32 0, i32 0
-  store ptr @vtable.Car, ptr %vtable_slot, align 8
+  %obj_alloc = call ptr @malloc(i64 ptrtoint (ptr getelementptr (%obj.Temperature, ptr null, i32 1) to i64))
+  %vtable_slot = getelementptr inbounds %obj.Temperature, ptr %obj_alloc, i32 0, i32 0
+  store ptr @vtable.Temperature, ptr %vtable_slot, align 8
   %self = alloca ptr, align 8
   store ptr %obj_alloc, ptr %self, align 8
-  %spd = alloca double, align 8
-  store double 1.200000e+02, ptr %spd, align 8
-  %d = alloca double, align 8
-  store double 4.000000e+00, ptr %d, align 8
-  %load_spd = load double, ptr %spd, align 8
-  %spd1 = alloca double, align 8
-  store double %load_spd, ptr %spd1, align 8
-  %load_spd2 = load double, ptr %spd1, align 8
-  %speed_field = getelementptr inbounds %obj.Car, ptr %obj_alloc, i32 0, i32 1
-  store double %load_spd2, ptr %speed_field, align 8
-  %load_d = load double, ptr %d, align 8
-  %doors_field = getelementptr inbounds %obj.Car, ptr %obj_alloc, i32 0, i32 2
-  store double %load_d, ptr %doors_field, align 8
-  %v = alloca ptr, align 8
-  store ptr %obj_alloc, ptr %v, align 8
-  %load_v = load ptr, ptr %v, align 8
-  %vtable_ptr = getelementptr inbounds %obj.Vehicle, ptr %load_v, i32 0, i32 0
-  %vtable_load = load ptr, ptr %vtable_ptr, align 8
-  %method_ptr = getelementptr inbounds %vtable.Vehicle, ptr %vtable_load, i32 0, i32 1
-  %method_load = load ptr, ptr %method_ptr, align 8
-  %call_Vehicle_move = call ptr %method_load(ptr %load_v)
-  %streqtmp = call i32 @strcmp(ptr %call_Vehicle_move, ptr @str.3)
-  %strcmptmp = icmp eq i32 %streqtmp, 0
-  br i1 %strcmptmp, label %if_then, label %if_else
+  %deg = alloca double, align 8
+  store double 3.000000e+01, ptr %deg, align 8
+  %load_deg = load double, ptr %deg, align 8
+  %deg_field = getelementptr inbounds %obj.Temperature, ptr %obj_alloc, i32 0, i32 1
+  store double %load_deg, ptr %deg_field, align 8
+  %t1 = alloca ptr, align 8
+  store ptr %obj_alloc, ptr %t1, align 8
+  %obj_alloc1 = call ptr @malloc(i64 ptrtoint (ptr getelementptr (%obj.Temperature, ptr null, i32 1) to i64))
+  %vtable_slot2 = getelementptr inbounds %obj.Temperature, ptr %obj_alloc1, i32 0, i32 0
+  store ptr @vtable.Temperature, ptr %vtable_slot2, align 8
+  %self3 = alloca ptr, align 8
+  store ptr %obj_alloc1, ptr %self3, align 8
+  %deg4 = alloca double, align 8
+  store double 2.500000e+01, ptr %deg4, align 8
+  %load_deg5 = load double, ptr %deg4, align 8
+  %deg_field6 = getelementptr inbounds %obj.Temperature, ptr %obj_alloc1, i32 0, i32 1
+  store double %load_deg5, ptr %deg_field6, align 8
+  %t2 = alloca ptr, align 8
+  store ptr %obj_alloc1, ptr %t2, align 8
+  %load_t1 = load ptr, ptr %t1, align 8
+  %load_t2 = load ptr, ptr %t2, align 8
+  %call_max_comp = call double @max_comp(ptr %load_t1, ptr %load_t2)
+  %cmptmp = fcmp oeq double %call_max_comp, 3.000000e+01
+  br i1 %cmptmp, label %if_then, label %if_else
 
 if_then:                                          ; preds = %entry
-  %print = call i32 (ptr, ...) @printf(ptr @print_fmt_str, ptr @str.4)
+  %print = call i32 (ptr, ...) @printf(ptr @print_fmt_str, ptr @str)
   br label %if_merge
 
 if_else:                                          ; preds = %entry
-  %print3 = call i32 (ptr, ...) @printf(ptr @print_fmt_str.6, ptr @str.5)
+  %print7 = call i32 (ptr, ...) @printf(ptr @print_fmt_str.2, ptr @str.1)
   br label %if_merge
 
 if_merge:                                         ; preds = %if_else, %if_then
-  %iftmp_str = phi ptr [ @str.4, %if_then ], [ @str.5, %if_else ]
-  %load_v4 = load ptr, ptr %v, align 8
-  %vtable_ptr5 = getelementptr inbounds %obj.Vehicle, ptr %load_v4, i32 0, i32 0
-  %vtable_load6 = load ptr, ptr %vtable_ptr5, align 8
-  %method_ptr7 = getelementptr inbounds %vtable.Vehicle, ptr %vtable_load6, i32 0, i32 2
-  %method_load8 = load ptr, ptr %method_ptr7, align 8
-  %call_Vehicle_max_speed = call double %method_load8(ptr %load_v4)
-  %cmptmp = fcmp oeq double %call_Vehicle_max_speed, 1.200000e+02
-  br i1 %cmptmp, label %if_then9, label %if_else10
+  %iftmp_str = phi ptr [ @str, %if_then ], [ @str.1, %if_else ]
+  %load_t28 = load ptr, ptr %t2, align 8
+  %load_t19 = load ptr, ptr %t1, align 8
+  %call_max_comp10 = call double @max_comp(ptr %load_t28, ptr %load_t19)
+  %cmptmp11 = fcmp oeq double %call_max_comp10, 3.000000e+01
+  br i1 %cmptmp11, label %if_then12, label %if_else13
 
-if_then9:                                         ; preds = %if_merge
-  %print12 = call i32 (ptr, ...) @printf(ptr @print_fmt_str.8, ptr @str.7)
-  br label %if_merge11
+if_then12:                                        ; preds = %if_merge
+  %print15 = call i32 (ptr, ...) @printf(ptr @print_fmt_str.4, ptr @str.3)
+  br label %if_merge14
 
-if_else10:                                        ; preds = %if_merge
-  %print13 = call i32 (ptr, ...) @printf(ptr @print_fmt_str.10, ptr @str.9)
-  br label %if_merge11
+if_else13:                                        ; preds = %if_merge
+  %print16 = call i32 (ptr, ...) @printf(ptr @print_fmt_str.6, ptr @str.5)
+  br label %if_merge14
 
-if_merge11:                                       ; preds = %if_else10, %if_then9
-  %iftmp_str14 = phi ptr [ @str.7, %if_then9 ], [ @str.9, %if_else10 ]
-  %obj_alloc15 = call ptr @malloc(i64 ptrtoint (ptr getelementptr (%obj.Bike, ptr null, i32 1) to i64))
-  %vtable_slot16 = getelementptr inbounds %obj.Bike, ptr %obj_alloc15, i32 0, i32 0
-  store ptr @vtable.Bike, ptr %vtable_slot16, align 8
-  %self17 = alloca ptr, align 8
-  store ptr %obj_alloc15, ptr %self17, align 8
-  %spd18 = alloca double, align 8
-  store double 2.500000e+01, ptr %spd18, align 8
-  %load_spd19 = load double, ptr %spd18, align 8
-  %spd20 = alloca double, align 8
-  store double %load_spd19, ptr %spd20, align 8
-  %load_spd21 = load double, ptr %spd20, align 8
-  %speed_field22 = getelementptr inbounds %obj.Bike, ptr %obj_alloc15, i32 0, i32 1
-  store double %load_spd21, ptr %speed_field22, align 8
-  %b = alloca ptr, align 8
-  store ptr %obj_alloc15, ptr %b, align 8
-  %load_b = load ptr, ptr %b, align 8
-  %vtable_ptr23 = getelementptr inbounds %obj.Vehicle, ptr %load_b, i32 0, i32 0
-  %vtable_load24 = load ptr, ptr %vtable_ptr23, align 8
-  %method_ptr25 = getelementptr inbounds %vtable.Vehicle, ptr %vtable_load24, i32 0, i32 1
-  %method_load26 = load ptr, ptr %method_ptr25, align 8
-  %call_Vehicle_move27 = call ptr %method_load26(ptr %load_b)
-  %streqtmp28 = call i32 @strcmp(ptr %call_Vehicle_move27, ptr @str.11)
-  %strcmptmp29 = icmp eq i32 %streqtmp28, 0
-  br i1 %strcmptmp29, label %if_then30, label %if_else31
-
-if_then30:                                        ; preds = %if_merge11
-  %print33 = call i32 (ptr, ...) @printf(ptr @print_fmt_str.13, ptr @str.12)
-  br label %if_merge32
-
-if_else31:                                        ; preds = %if_merge11
-  %print34 = call i32 (ptr, ...) @printf(ptr @print_fmt_str.15, ptr @str.14)
-  br label %if_merge32
-
-if_merge32:                                       ; preds = %if_else31, %if_then30
-  %iftmp_str35 = phi ptr [ @str.12, %if_then30 ], [ @str.14, %if_else31 ]
-  %load_b36 = load ptr, ptr %b, align 8
-  %vtable_ptr37 = getelementptr inbounds %obj.Vehicle, ptr %load_b36, i32 0, i32 0
-  %vtable_load38 = load ptr, ptr %vtable_ptr37, align 8
-  %method_ptr39 = getelementptr inbounds %vtable.Vehicle, ptr %vtable_load38, i32 0, i32 2
-  %method_load40 = load ptr, ptr %method_ptr39, align 8
-  %call_Vehicle_max_speed41 = call double %method_load40(ptr %load_b36)
-  %cmptmp42 = fcmp oeq double %call_Vehicle_max_speed41, 2.500000e+01
-  br i1 %cmptmp42, label %if_then43, label %if_else44
-
-if_then43:                                        ; preds = %if_merge32
-  %print46 = call i32 (ptr, ...) @printf(ptr @print_fmt_str.17, ptr @str.16)
-  br label %if_merge45
-
-if_else44:                                        ; preds = %if_merge32
-  %print47 = call i32 (ptr, ...) @printf(ptr @print_fmt_str.19, ptr @str.18)
-  br label %if_merge45
-
-if_merge45:                                       ; preds = %if_else44, %if_then43
-  %iftmp_str48 = phi ptr [ @str.16, %if_then43 ], [ @str.18, %if_else44 ]
-  ret ptr %iftmp_str48
+if_merge14:                                       ; preds = %if_else13, %if_then12
+  %iftmp_str17 = phi ptr [ @str.3, %if_then12 ], [ @str.5, %if_else13 ]
+  ret ptr %iftmp_str17
 }
 
 declare ptr @malloc(i64)
-
-declare i32 @strcmp(ptr, ptr)
 
 declare i32 @printf(ptr, ...)

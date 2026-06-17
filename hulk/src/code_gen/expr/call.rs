@@ -61,6 +61,10 @@ impl<'ctx> CodeGenerator<'ctx> {
             return false;
         };
 
+        if self.is_protocol_name(type_name, analysis) {
+            return false;
+        }
+
         self.object_method_owner(type_name, &member.field, analysis).is_err()
     }
 
@@ -410,6 +414,33 @@ impl<'ctx> CodeGenerator<'ctx> {
         }
     }
 
+    fn lower_protocol_method_call(
+        &mut self,
+        call: &CallExpr,
+        member: &crate::ast::MemberAccessExpr,
+        protocol_name: &str,
+        analysis: &SemanticAnalysis,
+    ) -> Result<CodegenValue<'ctx>, String> {
+        let receiver = self.lower_expr(&member.object, analysis)?.into_object()?;
+
+        let mut extra_args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
+            Vec::with_capacity(call.arguments.len());
+        for arg_expr in call.arguments.iter() {
+            let value = self.lower_expr(arg_expr, analysis)?;
+            let meta: inkwell::values::BasicMetadataValueEnum = match value {
+                CodegenValue::Number(v) => v.into(),
+                CodegenValue::Bool(v) => v.into(),
+                CodegenValue::String(v) => v.into(),
+                CodegenValue::Object(v) => v.into(),
+                CodegenValue::Vector(v) => v.into(),
+                CodegenValue::Closure(v) => v.into(),
+            };
+            extra_args.push(meta);
+        }
+
+        self.emit_protocol_dispatch(receiver, protocol_name, &member.field, &extra_args, analysis)
+    }
+
     fn lower_method_call(
         &mut self,
         call: &CallExpr,
@@ -417,6 +448,11 @@ impl<'ctx> CodeGenerator<'ctx> {
         analysis: &SemanticAnalysis,
     ) -> Result<CodegenValue<'ctx>, String> {
         let object_type = self.member_object_type(member, analysis)?;
+
+        if self.is_protocol_name(&object_type, analysis) {
+            return self.lower_protocol_method_call(call, member, &object_type, analysis);
+        }
+
         let owner_type = self.object_method_owner(&object_type, &member.field, analysis)?;
         let method_name = self.method_symbol_name(&owner_type, &member.field);
         let Some(info) = self.get_function(&method_name).cloned() else {

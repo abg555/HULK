@@ -2,7 +2,7 @@ use crate::ast::{ForExpr, KindExpr, WhileExpr};
 use crate::semantic::SemanticAnalysis;
 use crate::semantic::types::SemanticType;
 
-use super::super::{CodegenValue, CodeGenerator, ValueKind, VarInfo};
+use super::super::{CodegenValue, CodeGenerator, FunctionInfo, ValueKind, VarInfo};
 
 impl<'ctx> CodeGenerator<'ctx> {
     pub(super) fn lower_while(
@@ -72,6 +72,10 @@ impl<'ctx> CodeGenerator<'ctx> {
             && call.arguments.len() == 2
         {
             return self.lower_for_range(for_expr, call, result_kind, result_ptr, function, analysis);
+        }
+
+        if let Some(SemanticType::Custom(type_name)) = analysis.inferred_types.get(&for_expr.iterable.id) {
+            return self.lower_for_object(for_expr, result_kind, result_ptr, function, analysis, type_name.clone());
         }
 
         self.lower_for_vector(for_expr, result_kind, result_ptr, function, analysis)
@@ -235,5 +239,161 @@ impl<'ctx> CodeGenerator<'ctx> {
 
         self.builder.position_at_end(after_block);
         self.load_value(&result_kind, result_ptr, "for_result")
+    }
+
+    fn lower_for_object(
+        &mut self,
+        for_expr: &ForExpr,
+        result_kind: ValueKind,
+        result_ptr: inkwell::values::PointerValue<'ctx>,
+        function: inkwell::values::FunctionValue<'ctx>,
+        analysis: &SemanticAnalysis,
+        type_name: String,
+    ) -> Result<CodegenValue<'ctx>, String> {
+        let iterable_value = self.lower_expr(&for_expr.iterable, analysis)?.into_object()?;
+        let iterable_slot = self.alloca_for_kind(&ValueKind::Object, "for_obj_iter")?;
+        self.store_value(iterable_slot, CodegenValue::Object(iterable_value))?;
+
+        if self.is_protocol_name(&type_name, analysis) {
+            return self.lower_for_object_protocol(
+                for_expr,
+                result_kind,
+                result_ptr,
+                function,
+                analysis,
+                &type_name,
+                iterable_slot,
+            );
+        }
+
+        let next_owner = self.object_method_owner(&type_name, "next", analysis)?;
+        let next_symbol = self.method_symbol_name(&next_owner, "next");
+        let next_info = self
+            .get_function(&next_symbol)
+            .cloned()
+            .ok_or_else(|| format!("Metodo next no encontrado en {}", type_name))?;
+
+        let current_owner = self.object_method_owner(&type_name, "current", analysis)?;
+        let current_symbol = self.method_symbol_name(&current_owner, "current");
+        let current_info = self
+            .get_function(&current_symbol)
+            .cloned()
+            .ok_or_else(|| format!("Metodo current no encontrado en {}", type_name))?;
+        let elem_kind = current_info.ret;
+
+        let cond_block = self.context.append_basic_block(function, "for_cond");
+        let body_block = self.context.append_basic_block(function, "for_body");
+        let after_block = self.context.append_basic_block(function, "for_after");
+
+        self.builder
+            .build_unconditional_branch(cond_block)
+            .map_err(|e| e.to_string())?;
+
+        self.builder.position_at_end(cond_block);
+        let receiver = self
+            .load_value(&ValueKind::Object, iterable_slot, "for_obj_recv")?
+            .into_object()?;
+        let cond_value = self
+            .emit_vtable_call_no_args(receiver, &type_name, "next", &next_info)?
+            .into_bool()?;
+        self.builder
+            .build_conditional_branch(cond_value, body_block, after_block)
+            .map_err(|e| e.to_string())?;
+
+        self.builder.position_at_end(body_block);
+        self.enter_scope();
+        let receiver = self
+            .load_value(&ValueKind::Object, iterable_slot, "for_obj_recv2")?
+            .into_object()?;
+        let elem_value =
+            self.emit_vtable_call_no_args(receiver, &type_name, "current", &current_info)?;
+        let loop_var_ptr = self.alloca_for_kind(&elem_kind, &for_expr.variable)?;
+        self.store_value(loop_var_ptr, elem_value)?;
+        self.insert_var(
+            for_expr.variable.clone(),
+            VarInfo {
+                ptr: loop_var_ptr,
+                kind: elem_kind,
+            },
+        );
+
+        let body_value = self.lower_expr(&for_expr.body, analysis)?;
+        self.store_value(result_ptr, body_value)?;
+        self.exit_scope();
+        self.builder
+            .build_unconditional_branch(cond_block)
+            .map_err(|e| e.to_string())?;
+
+        self.builder.position_at_end(after_block);
+        self.load_value(&result_kind, result_ptr, "for_result")
+    }
+
+    fn lower_for_object_protocol(
+        &mut self,
+        for_expr: &ForExpr,
+        result_kind: ValueKind,
+        result_ptr: inkwell::values::PointerValue<'ctx>,
+        function: inkwell::values::FunctionValue<'ctx>,
+        analysis: &SemanticAnalysis,
+        protocol_name: &str,
+        iterable_slot: inkwell::values::PointerValue<'ctx>,
+    ) -> Result<CodegenValue<'ctx>, String> {
+        let elem_kind = self.protocol_method_return_kind(protocol_name, "current", analysis)?;
+
+        let cond_block = self.context.append_basic_block(function, "for_cond");
+        let body_block = self.context.append_basic_block(function, "for_body");
+        let after_block = self.context.append_basic_block(function, "for_after");
+
+        self.builder
+            .build_unconditional_branch(cond_block)
+            .map_err(|e| e.to_string())?;
+
+        self.builder.position_at_end(cond_block);
+        let receiver = self
+            .load_value(&ValueKind::Object, iterable_slot, "for_proto_recv")?
+            .into_object()?;
+        let cond_value = self
+            .emit_protocol_dispatch(receiver, protocol_name, "next", &[], analysis)?
+            .into_bool()?;
+        self.builder
+            .build_conditional_branch(cond_value, body_block, after_block)
+            .map_err(|e| e.to_string())?;
+
+        self.builder.position_at_end(body_block);
+        self.enter_scope();
+        let receiver = self
+            .load_value(&ValueKind::Object, iterable_slot, "for_proto_recv2")?
+            .into_object()?;
+        let elem_value =
+            self.emit_protocol_dispatch(receiver, protocol_name, "current", &[], analysis)?;
+        let loop_var_ptr = self.alloca_for_kind(&elem_kind, &for_expr.variable)?;
+        self.store_value(loop_var_ptr, elem_value)?;
+        self.insert_var(
+            for_expr.variable.clone(),
+            VarInfo {
+                ptr: loop_var_ptr,
+                kind: elem_kind,
+            },
+        );
+
+        let body_value = self.lower_expr(&for_expr.body, analysis)?;
+        self.store_value(result_ptr, body_value)?;
+        self.exit_scope();
+        self.builder
+            .build_unconditional_branch(cond_block)
+            .map_err(|e| e.to_string())?;
+
+        self.builder.position_at_end(after_block);
+        self.load_value(&result_kind, result_ptr, "for_result")
+    }
+
+    fn emit_vtable_call_no_args(
+        &mut self,
+        receiver: inkwell::values::PointerValue<'ctx>,
+        type_name: &str,
+        method_name: &str,
+        info: &FunctionInfo<'ctx>,
+    ) -> Result<CodegenValue<'ctx>, String> {
+        self.emit_vtable_call(receiver, type_name, method_name, info, &[])
     }
 }

@@ -445,7 +445,12 @@ impl<'a> FunctorDesugar<'a> {
                         .get(&var.name)
                         .is_some_and(|symbol| symbol.kind == SymbolKind::Function)
             }
-            KindExpr::MemberAccess(_) => true,
+            // Regular OO method calls are also represented as MemberAccess, and
+            // rewriting all of them to `.invoke(...)` breaks dispatch (e.g. p.getX()).
+            // Member accesses should only be lowered through the semantic-type
+            // branch in `should_lower_call_to_invoke` when they are functor-like
+            // custom values, not just because they are member accesses.
+            KindExpr::MemberAccess(_) => false,
             _ => false,
         }
     }

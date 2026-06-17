@@ -591,7 +591,27 @@ impl SemanticAnalyzer {
                             );
                         }
                     }
-                    Equal | NotEqual | Less | Greater | LessEqual | GreaterEqual => {}
+                    Less | Greater | LessEqual | GreaterEqual => {
+                        if let Some(name) = left_name {
+                            record_concrete(
+                                requirements,
+                                &name,
+                                SemanticType::Number,
+                                &mut self.diagnostics,
+                                expr.span,
+                            );
+                        }
+                        if let Some(name) = right_name {
+                            record_concrete(
+                                requirements,
+                                &name,
+                                SemanticType::Number,
+                                &mut self.diagnostics,
+                                expr.span,
+                            );
+                        }
+                    }
+                    Equal | NotEqual => {}
                 }
             }
             KindExpr::Unary(unary) => {
@@ -648,6 +668,31 @@ impl SemanticAnalyzer {
                         .entry(var.name.clone())
                         .or_default()
                         .requires_function = Some(call.arguments.len());
+                }
+
+                // Propagate known callee parameter types to inferable arguments.
+                if let KindExpr::Variable(callee_var) = &call.callee.kind {
+                    if let Some(SemanticType::Function(param_tys, _)) = self
+                        .symbols
+                        .lookup(&callee_var.name)
+                        .map(|s| s.typ.clone())
+                    {
+                        for (arg, param_ty) in call.arguments.iter().zip(param_tys.iter()) {
+                            if let KindExpr::Variable(arg_var) = &arg.kind
+                                && inferable.contains(&arg_var.name)
+                                && !is_shadowed(&arg_var.name, shadow_stack)
+                                && !matches!(param_ty, SemanticType::Unknown)
+                            {
+                                record_concrete(
+                                    requirements,
+                                    &arg_var.name,
+                                    param_ty.clone(),
+                                    &mut self.diagnostics,
+                                    expr.span,
+                                );
+                            }
+                        }
+                    }
                 }
             }
             KindExpr::BaseCall(base_call) => {

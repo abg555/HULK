@@ -948,4 +948,335 @@ impl<'ctx> CodeGenerator<'ctx> {
         }
         self.value_kind_from_semantic(typ)
     }
+
+    pub(super) fn is_protocol_name(&self, name: &str, analysis: &SemanticAnalysis) -> bool {
+        analysis.protocol_shapes.contains_key(name)
+    }
+
+    pub(super) fn types_conforming_to_protocol(
+        &self,
+        protocol_name: &str,
+        analysis: &SemanticAnalysis,
+    ) -> Vec<String> {
+        let Some(proto_shape) = analysis.protocol_shapes.get(protocol_name) else {
+            return Vec::new();
+        };
+
+        let mut result: Vec<String> = self
+            .type_decls
+            .keys()
+            .filter(|type_name| {
+                let Some(type_shape) = analysis.type_shapes.get(*type_name) else {
+                    return false;
+                };
+                proto_shape
+                    .methods
+                    .keys()
+                    .all(|m| type_shape.methods.contains_key(m))
+            })
+            .cloned()
+            .collect();
+
+        result.sort();
+        result
+    }
+
+    pub(super) fn protocol_method_return_kind(
+        &self,
+        protocol_name: &str,
+        method_name: &str,
+        analysis: &SemanticAnalysis,
+    ) -> Result<ValueKind, String> {
+        let shape = analysis
+            .protocol_shapes
+            .get(protocol_name)
+            .ok_or_else(|| format!("Protocolo no encontrado: {}", protocol_name))?;
+        let method_type = shape
+            .methods
+            .get(method_name)
+            .ok_or_else(|| format!("Metodo {} no en protocolo {}", method_name, protocol_name))?;
+        match method_type {
+            SemanticType::Function(_, ret) => self.value_kind_from_semantic(ret),
+            other => Err(format!(
+                "Tipo de metodo invalido en protocolo {}: {}",
+                protocol_name, other
+            )),
+        }
+    }
+
+    /// Dispatch vtable generico: emite una llamada indirecta via vtable al metodo
+    /// `method_name` del tipo concreto `type_name`, pasando `receiver` como self
+    /// y `extra_args` como argumentos adicionales.
+    pub(super) fn emit_vtable_call(
+        &mut self,
+        receiver: PointerValue<'ctx>,
+        type_name: &str,
+        method_name: &str,
+        info: &FunctionInfo<'ctx>,
+        extra_args: &[inkwell::values::BasicMetadataValueEnum<'ctx>],
+    ) -> Result<CodegenValue<'ctx>, String> {
+        use inkwell::AddressSpace;
+
+        let object_struct = self.object_struct_type(type_name)?;
+        let typed_ptr = self.cast_object_ptr(&receiver, type_name)?;
+
+        let vtable_ptr_slot = self
+            .builder
+            .build_struct_gep(object_struct, typed_ptr, 0, "vtable_slot")
+            .map_err(|e| e.to_string())?;
+        let vtable_ptr = self
+            .builder
+            .build_load(
+                self.context.i8_type().ptr_type(AddressSpace::default()),
+                vtable_ptr_slot,
+                "vtable_load",
+            )
+            .map_err(|e| e.to_string())?
+            .into_pointer_value();
+
+        let slot = self.method_slot(type_name, method_name)? + 1;
+        let order = self.method_order_for_type(type_name)?;
+        let vtable_type = self.vtable_struct_type(type_name, &order);
+        let vtable_typed = self
+            .builder
+            .build_pointer_cast(
+                vtable_ptr,
+                vtable_type.ptr_type(AddressSpace::default()),
+                "vtable_typed",
+            )
+            .map_err(|e| e.to_string())?;
+        let method_ptr_slot = self
+            .builder
+            .build_struct_gep(vtable_type, vtable_typed, slot as u32, "method_slot")
+            .map_err(|e| e.to_string())?;
+        let method_ptr = self
+            .builder
+            .build_load(
+                self.context.i8_type().ptr_type(AddressSpace::default()),
+                method_ptr_slot,
+                "method_load",
+            )
+            .map_err(|e| e.to_string())?
+            .into_pointer_value();
+
+        let fn_type = self.fn_type_for_signature(&info.params, info.ret);
+        let fn_ptr = self
+            .builder
+            .build_pointer_cast(
+                method_ptr,
+                fn_type.ptr_type(AddressSpace::default()),
+                "method_fn",
+            )
+            .map_err(|e| e.to_string())?;
+
+        let mut all_args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
+            vec![receiver.into()];
+        all_args.extend_from_slice(extra_args);
+
+        let call_result = self
+            .builder
+            .build_indirect_call(fn_type, fn_ptr, &all_args, "call_vtable")
+            .map_err(|e| e.to_string())?;
+        let value = call_result
+            .try_as_basic_value()
+            .left()
+            .ok_or_else(|| format!("El metodo {} no devolvio un valor", method_name))?;
+
+        match info.ret {
+            ValueKind::Number => Ok(CodegenValue::Number(value.into_float_value())),
+            ValueKind::Bool => Ok(CodegenValue::Bool(value.into_int_value())),
+            ValueKind::String => Ok(CodegenValue::String(value.into_pointer_value())),
+            ValueKind::Object => Ok(CodegenValue::Object(value.into_pointer_value())),
+            ValueKind::Vector => Ok(CodegenValue::Vector(value.into_pointer_value())),
+            ValueKind::Closure => Ok(CodegenValue::Closure(value.into_pointer_value())),
+        }
+    }
+
+    /// Dispatch de protocolo: dado un objeto cuyo tipo estatico es un protocolo,
+    /// genera un switch sobre el type_id en runtime para llamar al metodo correcto
+    /// del tipo concreto subyacente.
+    pub(super) fn emit_protocol_dispatch(
+        &mut self,
+        receiver: PointerValue<'ctx>,
+        protocol_name: &str,
+        method_name: &str,
+        extra_args: &[inkwell::values::BasicMetadataValueEnum<'ctx>],
+        analysis: &SemanticAnalysis,
+    ) -> Result<CodegenValue<'ctx>, String> {
+        use inkwell::{AddressSpace, IntPredicate};
+
+        let conforming = self.types_conforming_to_protocol(protocol_name, analysis);
+        if conforming.is_empty() {
+            return Err(format!(
+                "Ningun tipo concreto implementa el protocolo {} con el metodo {}",
+                protocol_name, method_name
+            ));
+        }
+
+        let ret_kind =
+            self.protocol_method_return_kind(protocol_name, method_name, analysis)?;
+
+        let type_id = {
+            let anchor = conforming[0].clone();
+            let object_struct = self.object_struct_type(&anchor)?;
+            let typed_ptr = self.cast_object_ptr(&receiver, &anchor)?;
+            let vtable_slot = self
+                .builder
+                .build_struct_gep(object_struct, typed_ptr, 0, "proto_vtable_slot")
+                .map_err(|e| e.to_string())?;
+            let vtable_ptr = self
+                .builder
+                .build_load(
+                    self.context.i8_type().ptr_type(AddressSpace::default()),
+                    vtable_slot,
+                    "proto_vtable_ptr",
+                )
+                .map_err(|e| e.to_string())?
+                .into_pointer_value();
+            let type_id_ptr = self
+                .builder
+                .build_pointer_cast(
+                    vtable_ptr,
+                    self.context.i64_type().ptr_type(AddressSpace::default()),
+                    "proto_type_id_ptr",
+                )
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_load(self.context.i64_type(), type_id_ptr, "proto_type_id")
+                .map_err(|e| e.to_string())?
+                .into_int_value()
+        };
+
+        let result_ptr = self.alloca_for_kind(&ret_kind, "proto_result")?;
+        let default_val = self.default_value_for_kind(ret_kind)?;
+        self.store_value(result_ptr, default_val)?;
+
+        let function = self
+            .builder
+            .get_insert_block()
+            .and_then(|b| b.get_parent())
+            .ok_or_else(|| "No hay funcion activa para dispatch de protocolo".to_string())?;
+
+        let after_block = self
+            .context
+            .append_basic_block(function, "proto_after");
+
+        let mut cur_block = self
+            .context
+            .append_basic_block(function, "proto_dispatch");
+        self.builder
+            .build_unconditional_branch(cur_block)
+            .map_err(|e| e.to_string())?;
+
+        for type_name in &conforming {
+            self.builder.position_at_end(cur_block);
+
+            let expected_id = self.type_id_for(type_name)?;
+            let expected_val = self.context.i64_type().const_int(expected_id, false);
+            let cmp = self
+                .builder
+                .build_int_compare(IntPredicate::EQ, type_id, expected_val, "proto_cmp")
+                .map_err(|e| e.to_string())?;
+
+            let match_block = self
+                .context
+                .append_basic_block(function, &format!("proto_match_{}", type_name));
+            let next_block = self
+                .context
+                .append_basic_block(function, &format!("proto_next_{}", type_name));
+
+            self.builder
+                .build_conditional_branch(cmp, match_block, next_block)
+                .map_err(|e| e.to_string())?;
+
+            self.builder.position_at_end(match_block);
+
+            let owner = self.object_method_owner(type_name, method_name, analysis)?;
+            let symbol = self.method_symbol_name(&owner, method_name);
+            let info = self
+                .get_function(&symbol)
+                .cloned()
+                .ok_or_else(|| format!("Metodo no encontrado: {}", symbol))?;
+
+            let result = self.emit_vtable_call(
+                receiver,
+                type_name,
+                method_name,
+                &info,
+                extra_args,
+            )?;
+            let coerced = self.coerce_value_to_kind(result, ret_kind)?;
+            self.store_value(result_ptr, coerced)?;
+            self.builder
+                .build_unconditional_branch(after_block)
+                .map_err(|e| e.to_string())?;
+
+            cur_block = next_block;
+        }
+
+        self.builder.position_at_end(cur_block);
+        let panic_fn = self.get_panic_function();
+        let msg_name = self.fresh_tmp("proto_panic_msg");
+        let msg = self
+            .builder
+            .build_global_string_ptr(
+                &format!(
+                    "Runtime error: tipo desconocido en dispatch de protocolo {}",
+                    protocol_name
+                ),
+                &msg_name,
+            )
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_call(panic_fn, &[msg.as_pointer_value().into()], "proto_panic")
+            .map_err(|e| e.to_string())?;
+        self.builder.build_unreachable().map_err(|e| e.to_string())?;
+
+        self.builder.position_at_end(after_block);
+        self.load_value(&ret_kind, result_ptr, "proto_result_load")
+    }
+
+    /// Coerciona un valor al ValueKind objetivo. Soporta reinterpretaciones entre
+    /// tipos puntero (String/Object/Vector/Closure). Falla si se intenta coaccionar
+    /// un primitivo a un puntero o viceversa.
+    pub(super) fn coerce_value_to_kind(
+        &mut self,
+        value: CodegenValue<'ctx>,
+        target: ValueKind,
+    ) -> Result<CodegenValue<'ctx>, String> {
+        use inkwell::AddressSpace;
+
+        if value.kind() == target {
+            return Ok(value);
+        }
+
+        let i8_ptr = self
+            .context
+            .i8_type()
+            .ptr_type(AddressSpace::default());
+
+        match (value, target) {
+            (CodegenValue::String(p), ValueKind::Object) => Ok(CodegenValue::Object(p)),
+            (CodegenValue::Object(p), ValueKind::String) => Ok(CodegenValue::String(p)),
+            (CodegenValue::Vector(p), ValueKind::Object) => {
+                let cast = self
+                    .builder
+                    .build_pointer_cast(p, i8_ptr, "vec_to_obj")
+                    .map_err(|e| e.to_string())?;
+                Ok(CodegenValue::Object(cast))
+            }
+            (CodegenValue::Closure(p), ValueKind::Object) => {
+                let cast = self
+                    .builder
+                    .build_pointer_cast(p, i8_ptr, "closure_to_obj")
+                    .map_err(|e| e.to_string())?;
+                Ok(CodegenValue::Object(cast))
+            }
+            (actual, expected) => Err(format!(
+                "No se puede coaccionar {:?} a {:?} en dispatch de protocolo",
+                actual.kind(),
+                expected
+            )),
+        }
+    }
 }

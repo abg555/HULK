@@ -489,19 +489,82 @@
 //     };
 // }
 
-type Accumulator(init: Number) {
-    total: Number = init;
+// type Accumulator(init: Number) {
+//     total: Number = init;
 
-    add(n: Number) { self.total := self.total + n; }
-    sub(n: Number) { self.total := self.total - n; }
-    scale(n: Number) { self.total := self.total * n; }
-    double() { self.scale(2); }
-    value(): Number { self.total; }
-}
+//     add(n: Number) { self.total := self.total + n; }
+//     sub(n: Number) { self.total := self.total - n; }
+//     scale(n: Number) { self.total := self.total * n; }
+//     double() { self.scale(2); }
+//     value(): Number { self.total; }
+// }
 
-let acc = new Accumulator(100) in {
-    acc.add(50);
-    acc.sub(30);
-    acc.double();
-    if (acc.value() == 240) print("ok") else print("fail");
-};
+// let acc = new Accumulator(100) in {
+//     acc.add(50);
+//     acc.sub(30);
+//     acc.double();
+//     if (acc.value() == 240) print("ok") else print("fail");
+// };
+
+// function grade(score: Number): String {
+//     if (score >= 90) "A"
+//     elif (score >= 80) "B"
+//     elif (score >= 70) "C"
+//     elif (score >= 60) "D"
+//     else "F";
+// }
+
+// {
+//     if (grade(95) == "A") print("ok") else print("fail");
+//     if (grade(85) == "B") print("ok") else print("fail");
+//     if (grade(75) == "C") print("ok") else print("fail");
+//     if (grade(65) == "D") print("ok") else print("fail");
+//     if (grade(55) == "F") print("ok") else print("fail");
+// }
+
+// function min_val(a, b) {
+//     if (a < b) a else b;
+// }
+
+// function max_val(a, b) {
+//     if (a > b) a else b;
+// }
+
+// function clamp(val, lo, hi) {
+//     min_val(max_val(val, lo), hi);
+// }
+
+// {
+//     if (min_val(3, 5) == 3) print("ok") else print("fail");
+//     if (max_val(3, 5) == 5) print("ok") else print("fail");
+//     if (clamp(10, 0, 5) == 5) print("ok") else print("fail");
+//     if (clamp(-3, 0, 5) == 0) print("ok") else print("fail");
+//     if (clamp(3, 0, 5) == 3) print("ok") else print("fail");
+// }
+
+// type Squares(n: Number) {
+//     i: Number = 0;
+//     limit: Number = n;
+
+//     next(): Boolean {
+//         self.i := self.i + 1;
+//         self.i <= self.limit;
+//     }
+
+//     current(): Number { self.i * self.i; }
+// }
+
+// function sum_gen(gen: Number*): Number {
+//     let s: Number = 0 in {
+//         for (x in gen) {
+//             s := s + x;
+//         };
+//         s;
+//     };
+// }
+
+// {
+//     if (sum_gen(new Squares(3)) == 14) print("ok") else print("fail");
+//     if (sum_gen(new Squares(4)) == 30) print("ok") else print("fail");
+// }
+
