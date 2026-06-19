@@ -261,19 +261,35 @@ LambdaExpr: Expr = {
     "function" "(" <params:ParamList> ")" <return_type:(":" <TypeRef>)?> "->" <body:Expr> => mk_expr(KindExpr::Lambda(LambdaExpr { params, return_type, body: Box::new(body)})),
 }
 
-NewExpr: Expr = {
-    "new" <name:NewTypeName> "(" <arguments:ArgList> ")" => {mk_expr(KindExpr::New(NewExpr { type_name: name, arguments }))},
-    "new" <name:NewTypeName> "[" <size:Expr> "]" => {mk_expr(KindExpr::New(NewExpr { type_name: format!("{}[]", name), arguments: vec![size] }))},
-    "new" <name:NewTypeName> "[" "]" => {mk_expr(KindExpr::New(NewExpr { type_name: format!("{}[]", name), arguments: vec![] }))},
+NonEmptyParamList: Vec<Param> = {
+    <p:Param> => vec![p],
+    <mut l:NonEmptyParamList> "," <p:Param> => { l.push(p); l }
 }
 
-// Regla auxiliar para capturar el identificador base (sin sufijos de array)
-NewTypeName: String = {
-    "Number" => "Number".to_string(),
-    "String" => "String".to_string(),
-    "Boolean" => "Boolean".to_string(),
-    <name:"id"> => name,
+NewExpr: Expr = {
+    "new" <base:BaseTypeRef> <arrays:ArraySuffix*> "(" <arguments:ArgList> ")" => {
+        let inner = arrays.into_iter().fold(base, |acc, _| TypeRef::Vector(Box::new(acc)));
+        let ty = inner;
+        mk_expr(KindExpr::New(NewExpr { type_info: ty, arguments, initializer: None }))
+    },
+    "new" <base:BaseTypeRef> <arrays:ArraySuffix*> "[" <size:Expr> "]" "(" <params:NonEmptyParamList> "->"  <body:Expr>  ")" => {
+        let inner = arrays.into_iter().fold(base, |acc, _| TypeRef::Vector(Box::new(acc)));
+        let ty = TypeRef::Vector(Box::new(inner));
+        let lambda_expr = mk_expr(KindExpr::Lambda(LambdaExpr { params, return_type: None, body: Box::new(body) }));
+        mk_expr(KindExpr::New(NewExpr { type_info: ty, arguments: vec![size], initializer: Some(Box::new(lambda_expr)) }))
+    },
+    "new" <base:BaseTypeRef> <arrays:ArraySuffix*> "[" <size:Expr> "]" => {
+        let inner = arrays.into_iter().fold(base, |acc, _| TypeRef::Vector(Box::new(acc)));
+        let ty = TypeRef::Vector(Box::new(inner));
+        mk_expr(KindExpr::New(NewExpr { type_info: ty, arguments: vec![size], initializer: None }))
+    },
+    "new" <base:BaseTypeRef> <arrays:ArraySuffix*> "[" "]" => {
+        let inner = arrays.into_iter().fold(base, |acc, _| TypeRef::Vector(Box::new(acc)));
+        let ty = TypeRef::Vector(Box::new(inner));
+        mk_expr(KindExpr::New(NewExpr { type_info: ty, arguments: vec![], initializer: None }))
+    },
 }
+
 
 MatchExpr: Expr = {
     "match" <expr:Expr> "{" <cases:MatchCaseList> "}" => mk_expr(KindExpr::Match(MatchExpr { expression: Box::new(expr), cases, })),

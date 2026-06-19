@@ -3,6 +3,7 @@ pub mod code_gen;
 pub mod diagnostics;
 pub mod lexer;
 pub mod node_ids;
+pub mod preprocessor;
 pub mod semantic;
 
 use lalrpop_util::lalrpop_mod;
@@ -19,8 +20,13 @@ pub use semantic::{functor_desugar, macro_expander, symbol_table, types};
 pub fn lex_safe(input: &str) -> Result<Vec<lexer::Token>, String> {
     use logos::Logos;
 
+    // Preprocess source to accept array initializers written with braces after size,
+    // e.g. `new Number[5]{ i -> i * 2 }` -> `new Number[5]( i -> i * 2 )` so
+    // the parser rule that expects parentheses can consume the lambda initializer.
+    let preprocessed = preprocessor::preprocess_new_array_initializers(input);
+
     let mut tokens = Vec::new();
-    let mut lexer = lexer::Token::lexer(input);
+    let mut lexer = lexer::Token::lexer(&preprocessed);
 
     while let Some(result) = lexer.next() {
         match result {
@@ -32,13 +38,11 @@ pub fn lex_safe(input: &str) -> Result<Vec<lexer::Token>, String> {
         }
     }
 
-    let tokens = lexer::remove_double_pipe_tokens(tokens);
-    // 1. Envolver los IFs después de operadores binarios inmediatamente para proteger la aritmética
-    let tokens = lexer::wrap_inline_if_after_binary_ops(tokens);
-    // 2. Ejecutar el resto de transformaciones sintácticas complejas
-    let tokens = lexer::add_lambda_tokens(tokens);
-    let tokens = lexer::fix_list_comprehension_pipe(tokens);
-    let tokens = lexer::mark_macro_block_calls(tokens);
+    let tokens = preprocessor::remove_double_pipe_tokens(tokens);
+    let tokens = preprocessor::wrap_inline_if_after_binary_ops(tokens);
+    let tokens = preprocessor::add_lambda_tokens(tokens);
+    let tokens = preprocessor::fix_list_comprehension_pipe(tokens);
+    let tokens = preprocessor::mark_macro_block_calls(tokens);
 
     Ok(tokens)
 }

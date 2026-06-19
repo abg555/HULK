@@ -2,7 +2,7 @@ use inkwell::AddressSpace;
 use inkwell::IntPredicate;
 use inkwell::values::PointerValue;
 
-use crate::ast::{AsExpr, IsExpr, MemberAccessExpr, NewExpr};
+use crate::ast::{AsExpr, IsExpr, MemberAccessExpr, NewExpr, TypeRef};
 use crate::semantic::SemanticAnalysis;
 use crate::semantic::types::SemanticType;
 
@@ -196,31 +196,33 @@ impl<'ctx> CodeGenerator<'ctx> {
         new_expr: &NewExpr,
         analysis: &SemanticAnalysis,
     ) -> Result<CodegenValue<'ctx>, String> {
-        let decl = self
-            .type_decls
-            .get(&new_expr.type_name)
-            .cloned()
-            .ok_or_else(|| format!("Tipo no definido: {}", new_expr.type_name))?;
+        match &new_expr.type_info {
+            TypeRef::Custom(type_name) => {
+                let decl = self
+                    .type_decls
+                    .get(type_name)
+                    .cloned()
+                    .ok_or_else(|| format!("Tipo no definido: {}", type_name))?;
 
-        let expected_ctor_len = analysis
-            .type_shapes
-            .get(&new_expr.type_name)
-            .map(|s| s.ctor_params.len())
-            .unwrap_or(decl.param.len());
+                let expected_ctor_len = analysis
+                    .type_shapes
+                    .get(type_name)
+                    .map(|s| s.ctor_params.len())
+                    .unwrap_or(decl.param.len());
 
-        if expected_ctor_len != new_expr.arguments.len() {
-            return Err(format!(
-                "Aridad invalida al construir {}: se esperaban {} argumentos y llegaron {}",
-                new_expr.type_name,
-                expected_ctor_len,
-                new_expr.arguments.len()
-            ));
-        }
+                if expected_ctor_len != new_expr.arguments.len() {
+                    return Err(format!(
+                        "Aridad invalida al construir {}: se esperaban {} argumentos y llegaron {}",
+                        type_name,
+                        expected_ctor_len,
+                        new_expr.arguments.len()
+                    ));
+                }
 
-        let object_struct = self.object_struct_type(&new_expr.type_name)?;
-        let size_value = object_struct
-            .size_of()
-            .ok_or_else(|| format!("No se pudo calcular el tamano de {}", new_expr.type_name))?;
+                let object_struct = self.object_struct_type(type_name)?;
+                let size_value = object_struct
+                    .size_of()
+                    .ok_or_else(|| format!("No se pudo calcular el tamano de {}", type_name))?;
         let malloc_fn = self.get_malloc_function();
         let size_value = self
             .builder
@@ -244,7 +246,7 @@ impl<'ctx> CodeGenerator<'ctx> {
             )
             .map_err(|e| e.to_string())?;
 
-        let vtable_ptr = self.vtable_global(&new_expr.type_name)?.as_pointer_value();
+        let vtable_ptr = self.vtable_global(type_name)?.as_pointer_value();
         let vtable_slot = self
             .builder
             .build_struct_gep(object_struct, typed_ptr, 0, "vtable_slot")
@@ -273,18 +275,27 @@ impl<'ctx> CodeGenerator<'ctx> {
             },
         );
 
-        self.initialize_object_fields(
-            &new_expr.type_name,
-            &new_expr.type_name,
-            &new_expr.arguments,
-            analysis,
-            object_struct,
-            typed_ptr,
-        )?;
+                self.initialize_object_fields(
+                    type_name,
+                    type_name,
+                    &new_expr.arguments,
+                    analysis,
+                    object_struct,
+                    typed_ptr,
+                )?;
 
-        self.exit_scope();
+                self.exit_scope();
 
-        Ok(CodegenValue::Object(raw_ptr))
+                return Ok(CodegenValue::Object(raw_ptr));
+            }
+            TypeRef::Vector(_) => {
+                return Err("Creacion de vectores no esta implementada en el generador de codigo".to_string());
+            }
+            other => {
+                return Err(format!("No se puede construir tipo: {:?}", other));
+            }
+        }
+        
     }
 
     pub(super) fn lower_member_access(

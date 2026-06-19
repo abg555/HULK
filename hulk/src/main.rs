@@ -3,8 +3,10 @@ mod code_gen;
 mod diagnostics;
 mod lexer;
 mod node_ids;
+mod preprocessor;
 mod semantic; // Asegúrate de que el módulo sea visible
 use semantic::functor_desugar;
+use preprocessor::{preprocess_new_array_initializers, remove_double_pipe_tokens, wrap_inline_if_after_binary_ops, add_lambda_tokens, fix_list_comprehension_pipe};
 use std::env;
 use std::fs;
 use std::io::{self, Read};
@@ -232,8 +234,12 @@ fn main() -> io::Result<()> {
 fn lex_safe(input: &str) -> Result<Vec<lexer::Token>, (usize, String)> {
     use logos::Logos;
 
+    // Preprocess source: convert `{...}` patterns to appropriate brackets
+    let preprocessed = preprocess_new_array_initializers(input);
+
+    // Tokenize
     let mut tokens = Vec::new();
-    let mut lexer = lexer::Token::lexer(input);
+    let mut lexer = lexer::Token::lexer(&preprocessed);
 
     while let Some(result) = lexer.next() {
         match result {
@@ -247,14 +253,11 @@ fn lex_safe(input: &str) -> Result<Vec<lexer::Token>, (usize, String)> {
         }
     }
 
-    let tokens = lexer::remove_double_pipe_tokens(tokens);
-
-    // 1. Envolver los IFs después de operadores binarios inmediatamente para proteger la aritmética
-    let tokens = lexer::wrap_inline_if_after_binary_ops(tokens);
-
-    // 2. Ejecutar el resto de transformaciones sintácticas complejas
-    let tokens = lexer::add_lambda_tokens(tokens);
-    let tokens = lexer::fix_list_comprehension_pipe(tokens);
+    // Post-lexing token transformations
+    let tokens = remove_double_pipe_tokens(tokens);
+    let tokens = wrap_inline_if_after_binary_ops(tokens);
+    let tokens = add_lambda_tokens(tokens);
+    let tokens = fix_list_comprehension_pipe(tokens);
 
     Ok(tokens)
 }

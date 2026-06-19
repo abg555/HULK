@@ -624,8 +624,8 @@ fn print_expr_tree(expr: &hulk::Expr, prefix: &str, is_last: bool) {
         }
         hulk::KindExpr::New(new_expr) => {
             println!(
-                "{}{}[New Instance] type: {}",
-                prefix, connector, new_expr.type_name
+                "{}{}[New Instance] type: {:?}",
+                prefix, connector, new_expr.type_info
             );
             if !new_expr.arguments.is_empty() {
                 let new_prefix = format!("{}{}", prefix, if is_last { "   " } else { "│  " });

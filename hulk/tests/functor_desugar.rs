@@ -66,7 +66,7 @@ test(is_odd)
     assert!(
         matches!(
             arguments.first().map(|arg| &arg.kind),
-            Some(KindExpr::New(new_expr)) if new_expr.type_name.starts_with("_FunctorWrapper")
+            Some(KindExpr::New(new_expr)) if matches!(new_expr.type_info, TypeRef::Custom(ref n) if n.starts_with("_FunctorWrapper"))
         ),
         "expected function argument to be wrapped with new _FunctorWrapper"
     );

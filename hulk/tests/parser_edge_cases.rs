@@ -129,6 +129,12 @@ fn function_declarations_arrow_and_block() {
 fn lambda_expressions() {
     parses("let f = (x: Number): Number => x * 2 in f(21)");
     parses("(x: Number): Boolean => x > 0");
+    parses("i -> i * 2");
+}
+
+#[test]
+fn new_with_short_lambda_syntax() {
+    parses("let a: Number[] = new Number[5](i -> i * 2) in { if (a[0] == 0) print(\"ok\") else print(\"fail\"); if (a[1] == 2) print(\"ok\") else print(\"fail\"); if (a[2] == 4) print(\"ok\") else print(\"fail\"); if (a[3] == 6) print(\"ok\") else print(\"fail\"); if (a[4] == 8) print(\"ok\") else print(\"fail\"); }");
 }
 
 #[test]

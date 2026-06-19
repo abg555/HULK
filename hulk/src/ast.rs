@@ -241,7 +241,7 @@ pub struct LetBinding {
     pub initializer: Expr,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub enum TypeRef {
     Number,
     String,
@@ -316,8 +316,9 @@ pub struct LambdaExpr {
 
 #[derive(Clone)]
 pub struct NewExpr {
-    pub type_name: String, //ej: new Person("Ana")
+    pub type_info: TypeRef, // ej: new Person("Ana")  or new Number[3]
     pub arguments: Vec<Expr>,
+    pub initializer: Option<Box<Expr>>, // optional array initializer block: { i -> ... }
 }
 
 #[derive(Clone)]

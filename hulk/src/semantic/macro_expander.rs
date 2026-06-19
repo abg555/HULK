@@ -489,7 +489,7 @@ impl MacroExpander {
                 }))
             }
             KindExpr::New(new_expr) => mk_expr(KindExpr::New(NewExpr {
-                type_name: new_expr.type_name.clone(),
+                type_info: new_expr.type_info.clone(),
                 arguments: new_expr
                     .arguments
                     .iter()
@@ -503,6 +503,13 @@ impl MacroExpander {
                         )
                     })
                     .collect(),
+                initializer: new_expr.initializer.as_ref().map(|init| Box::new(self.expand_expr(
+                    init,
+                    substitutions,
+                    renames,
+                    expansion_stack,
+                    sanitize_locals,
+                ))),
             })),
             KindExpr::Is(is_expr) => mk_expr(KindExpr::Is(IsExpr {
                 expression: Box::new(self.expand_expr(

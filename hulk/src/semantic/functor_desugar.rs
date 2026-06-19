@@ -299,12 +299,16 @@ impl<'a> FunctorDesugar<'a> {
                 self.rebuild_expr(original, KindExpr::Lambda(lambda))
             }
             KindExpr::New(mut new_expr) => {
-                let expected_args = self
-                    .context
-                    .type_shapes
-                    .get(&new_expr.type_name)
-                    .map(|shape| shape.ctor_params.clone())
-                    .unwrap_or_default();
+                // If the new expression targets a named type, try to get constructor shapes
+                let expected_args = match &new_expr.type_info {
+                    TypeRef::Custom(name) => self
+                        .context
+                        .type_shapes
+                        .get(name)
+                        .map(|shape| shape.ctor_params.clone())
+                        .unwrap_or_default(),
+                    _ => vec![],
+                };
                 new_expr.arguments = new_expr
                     .arguments
                     .into_iter()
@@ -356,8 +360,9 @@ impl<'a> FunctorDesugar<'a> {
             return self.rebuild_expr(
                 expr,
                 KindExpr::New(NewExpr {
-                    type_name,
+                    type_info: TypeRef::Custom(type_name),
                     arguments: call.arguments,
+                    initializer: None,
                 }),
             );
         }
@@ -602,8 +607,9 @@ impl<'a> FunctorDesugar<'a> {
         self.wrapper_types.push(Item::Type(wrapper));
 
         let mut lowered = mk_expr(KindExpr::New(NewExpr {
-            type_name: wrapper_name,
+            type_info: TypeRef::Custom(wrapper_name),
             arguments: vec![expr],
+            initializer: None,
         }));
         lowered.span = Span { start: 0, end: 0 };
         lowered

@@ -590,7 +590,31 @@ impl SemanticAnalyzer {
                     .iter()
                     .map(|arg| self.check_expr(arg))
                     .collect::<Vec<_>>();
-                self.check_constructor_call(&new_expr.type_name, &arg_types, expr.span)
+
+                match &new_expr.type_info {
+                    TypeRef::Custom(name) => self.check_constructor_call(name, &arg_types, expr.span),
+                    TypeRef::Vector(inner) => {
+                        // vector construction: expect at most one numeric size argument
+                        if arg_types.len() > 1 {
+                            self.diagnostics.error(
+                                "Constructor de vector acepta a lo sumo un argumento de tamaño".to_string(),
+                                expr.span,
+                            );
+                        }
+                        if let Some(size_ty) = arg_types.get(0) {
+                            self.expect_type(expr.span, size_ty, &SemanticType::Number, "tamaño de vector");
+                        }
+                        SemanticType::Vector(Box::new(SemanticType::from_type_ref(inner)))
+                    }
+                    other => {
+                        // For other type refs (functions, etc.) fall back to unknown/custom handling
+                        self.diagnostics.error(
+                            format!("No se puede construir tipo: {:?}", other),
+                            expr.span,
+                        );
+                        SemanticType::Unknown
+                    }
+                }
             }
             KindExpr::Is(is_expr) => {
                 let expression_ty = self.check_expr(&is_expr.expression);
