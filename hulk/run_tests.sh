@@ -39,6 +39,9 @@ run_ok_test() {
     local hulk_file="$1" expected_file="$2" cat="$3" name="$4"
     local tmperr; tmperr=$(mktemp)
 
+    # Clean previous binary so a failed compile never reuses a stale ./output
+    rm -f "$STUDENT_REPO/output" "$STUDENT_REPO/output.o"
+
     # Compile: run from student repo so ./output lands there
     local compile_exit=0
     (cd "$STUDENT_REPO" && "$HULK" "$hulk_file" > /dev/null 2> "$tmperr") || compile_exit=$?
