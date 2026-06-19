@@ -89,14 +89,6 @@ pub enum Token {
     #[token("false")]
     False,
 
-    // Token sintético para lambdas (no es un keyword, se agrega en post-procesamiento)
-    #[doc(hidden)]
-    Lambda,
-
-    // Token sintético para distinguir bloques usados como argumento de macro: repeat(10) { ... }
-    #[doc(hidden)]
-    MacroLBrace,
-
     #[token("Number")]
     TypeNumber,
 

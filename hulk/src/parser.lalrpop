@@ -30,7 +30,6 @@ extern {
         "def" => Token::Def,
         "define" => Token::Define,
         "self" => Token::SelfToken,
-        "lambda" => Token::Lambda,
         "id" => Token::Identifier(<String>),
         "num" => Token::Number(<f64>),
         "str" => Token::String(<String>),
@@ -64,7 +63,6 @@ extern {
         "$" => Token::Dollar,
         "(" => Token::LParen,
         ")" => Token::RParen,
-        "macro_lbrace" => Token::MacroLBrace,
         "{" => Token::LBrace,
         "}" => Token::RBrace,
         "[" => Token::LBracket,
@@ -257,7 +255,6 @@ ForExpr : Expr = {
 }
 
 LambdaExpr: Expr = {
-    "lambda" "(" <params:ParamList> ")" <return_type:(":" <TypeRef>)?> "=>" <body:Expr> => mk_expr(KindExpr::Lambda(LambdaExpr { params, return_type, body: Box::new(body)})),
     "function" "(" <params:ParamList> ")" <return_type:(":" <TypeRef>)?> "->" <body:Expr> => mk_expr(KindExpr::Lambda(LambdaExpr { params, return_type, body: Box::new(body)})),
 }
 
@@ -463,31 +460,7 @@ UnaryExpr: Expr = {
 }
 
 CallExpr: Expr = {
-    <callee:CallExpr> "(" <args:ArgList> ")" <block:MacroBlockExpr> => {
-        let arguments = args;
-        match callee.kind {
-            KindExpr::Variable(var) => {
-                let macro_arguments = arguments
-                    .into_iter()
-                    .map(|value| MacroCallArg { kind: MacroParamKind::Normal, value })
-                    .collect();
-
-                mk_expr(KindExpr::MacroCall(MacroCallExpr {
-                    name: var.name,
-                    arguments: macro_arguments,
-                    action: Some(Box::new(block)),
-                }))
-            }
-            other_kind => {
-                let mut all_arguments = arguments;
-                all_arguments.push(block);
-                mk_expr(KindExpr::Call(CallExpr {
-                    callee: Box::new(mk_expr(other_kind)),
-                    arguments: all_arguments,
-                }))
-            }
-        }
-    },
+    
     <callee:CallExpr> "(" <macro_args:MacroMarkedArgList> ")" => {
         match callee.kind {
             KindExpr::Variable(var) => {
@@ -512,9 +485,7 @@ CallExpr: Expr = {
     PrimaryExpr,
 }
 
-MacroBlockExpr: Expr = {
-    "macro_lbrace" <exprs:ExprList> "}" => mk_expr(KindExpr::Block(BlockExpr { expressions: exprs }))
-}
+
 
 MacroMarkedArgList: Vec<MacroCallArg> = {
     <arg:MacroMarkedArg> => vec![arg],

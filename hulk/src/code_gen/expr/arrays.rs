@@ -208,7 +208,7 @@ impl<'ctx> CodeGenerator<'ctx> {
             && callee.name == "range"
             && call.arguments.len() == 2
         {
-            return self.lower_array_comprehension_range(comp, call, analysis);
+            return self.lower_array_comprehension_range(comp, &call, analysis);
         }
 
         // Evaluate iterable

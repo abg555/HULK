@@ -21,72 +21,6 @@ pub fn find_matching_rparen(tokens: &[Token], lparen_idx: usize) -> Option<usize
     None
 }
 
-fn is_lambda_pattern(tokens: &[Token], rparen_idx: usize) -> bool {
-    let mut idx = rparen_idx + 1;
-    if idx < tokens.len() && tokens[idx] == Token::Colon {
-        idx += 1;
-        while idx < tokens.len() {
-            match &tokens[idx] {
-                Token::Arrow => return true,
-                Token::Number(_)
-                | Token::String(_)
-                | Token::Identifier(_)
-                | Token::LBracket
-                | Token::RBracket
-                | Token::LParen
-                | Token::RParen
-                | Token::TypeNumber
-                | Token::TypeString
-                | Token::TypeBoolean => {
-                    idx += 1;
-                }
-                _ => return false,
-            }
-        }
-        false
-    } else {
-        idx < tokens.len() && tokens[idx] == Token::Arrow
-    }
-}
-
-pub fn add_lambda_tokens(tokens: Vec<Token>) -> Vec<Token> {
-    let mut result = Vec::new();
-    let mut i = 0;
-
-    while i < tokens.len() {
-        if tokens[i] == Token::LParen {
-            let prev_token_is_keyword = i > 0
-                && matches!(
-                    tokens[i - 1],
-                    Token::Case
-                        | Token::Match
-                        | Token::If
-                        | Token::While
-                        | Token::For
-                        | Token::Function
-                        | Token::Def
-                        | Token::New
-                );
-
-            let prev_token_is_identifier = i > 0 && matches!(tokens[i - 1], Token::Identifier(_));
-
-            let is_potential_lambda = !prev_token_is_keyword && !prev_token_is_identifier;
-
-            if is_potential_lambda {
-                if let Some(rparen_idx) = find_matching_rparen(&tokens, i) {
-                    if is_lambda_pattern(&tokens, rparen_idx) {
-                        result.push(Token::Lambda);
-                    }
-                }
-            }
-        }
-        result.push(tokens[i].clone());
-        i += 1;
-    }
-
-    result
-}
-
 pub fn remove_double_pipe_tokens(tokens: Vec<Token>) -> Vec<Token> {
     tokens
         .into_iter()
@@ -329,55 +263,294 @@ pub fn wrap_inline_if_after_binary_ops(tokens: Vec<Token>) -> Vec<Token> {
     result
 }
 
-pub fn mark_macro_block_calls(tokens: Vec<Token>) -> Vec<Token> {
-    let mut result = tokens;
-
-    for i in 0..result.len() {
-        let is_identifier = matches!(result.get(i), Some(Token::Identifier(_)));
-        let is_lparen_after = matches!(result.get(i + 1), Some(Token::LParen));
-
-        if !is_identifier || !is_lparen_after {
-            continue;
-        }
-
-        if !is_expr_context_for_macro_call(&result, i) {
-            continue;
-        }
-
-        if let Some(rparen_idx) = find_matching_rparen(&result, i + 1) {
-            if rparen_idx + 1 < result.len() && result[rparen_idx + 1] == Token::LBrace {
-                result[rparen_idx + 1] = Token::MacroLBrace;
-            }
-        }
-    }
-
-    result
-}
-
-fn is_expr_context_for_macro_call(tokens: &[Token], idx: usize) -> bool {
-    if idx == 0 {
-        return true;
-    }
-
-    matches!(
-        tokens[idx - 1],
-        Token::Semicolon
-            | Token::In
-            | Token::Comma
-            | Token::LParen
-            | Token::Else
-            | Token::Arrow
-            | Token::ColonEqual
-            | Token::Equal
-    )
-}
-
 // ==========================================
 // SOURCE TEXT PREPROCESSING
 // ==========================================
 
 /// Replace `{ ... }` with `( ... )` for `new Type[expr]{...}` (initializer with lambda).
 /// Also replace `{ ... }` with `[ ... ]` for array literals like `{1,2,3}` (contains only commas, not semicolons).
+fn skip_whitespace(input: &str, mut i: usize) -> usize {
+    while let Some(ch) = input[i..].chars().next() {
+        if ch.is_whitespace() {
+            i += ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+    i
+}
+
+fn find_matching_delimiter(input: &str, mut i: usize, open: char, close: char) -> Option<usize> {
+    let mut depth = 0;
+    while i < input.len() {
+        let ch = input[i..].chars().next().unwrap();
+        if ch == open {
+            depth += 1;
+            i += ch.len_utf8();
+        } else if ch == close {
+            depth -= 1;
+            i += ch.len_utf8();
+            if depth == 0 {
+                return Some(i);
+            }
+        } else if ch == '"' || ch == '\'' {
+            // Skip string/char literals to avoid false delimiter matches.
+            let quote = ch;
+            i += ch.len_utf8();
+            while i < input.len() {
+                let c2 = input[i..].chars().next().unwrap();
+                i += c2.len_utf8();
+                if c2 == quote {
+                    break;
+                }
+                if c2 == '\\' && i < input.len() {
+                    i += input[i..].chars().next().unwrap().len_utf8();
+                }
+            }
+        } else {
+            i += ch.len_utf8();
+        }
+    }
+    None
+}
+
+fn prev_non_whitespace_char(input: &str, mut i: usize) -> Option<char> {
+    while i > 0 {
+        i -= 1;
+        let ch = input[i..].chars().next().unwrap();
+        if ch.is_whitespace() {
+            continue;
+        }
+        return Some(ch);
+    }
+    None
+}
+
+fn is_array_comprehension(input: &str, start: usize, end: usize) -> bool {
+    let mut depth = 0;
+    let mut i = start + 1;
+
+    while i < end - 1 {
+        let ch = input[i..].chars().next().unwrap();
+        if ch == '"' || ch == '\'' {
+            if let Some(next) = find_matching_delimiter(input, i, ch, ch) {
+                i = next;
+                continue;
+            }
+            break;
+        }
+
+        if ch == '[' || ch == '{' || ch == '(' {
+            depth += 1;
+            i += ch.len_utf8();
+            continue;
+        }
+        if ch == ']' || ch == '}' || ch == ')' {
+            if depth > 0 {
+                depth -= 1;
+            }
+            i += ch.len_utf8();
+            continue;
+        }
+
+        if depth == 0 && ch == '|' {
+            let next = skip_whitespace(input, i + 1);
+            if next + 2 <= input.len() && &input[next..next + 2] == "in" {
+                return true;
+            }
+        }
+
+        i += ch.len_utf8();
+    }
+
+    false
+}
+
+fn has_invalid_literal_bracket_array(input: &str) -> Option<usize> {
+    let mut i = 0;
+    while i < input.len() {
+        if input[i..].starts_with("//") {
+            i += 2;
+            while i < input.len() {
+                let ch = input[i..].chars().next().unwrap();
+                i += ch.len_utf8();
+                if ch == '\n' {
+                    break;
+                }
+            }
+            continue;
+        }
+
+        if input[i..].starts_with("/*") {
+            if let Some(end_comment) = input[i + 2..].find("*/") {
+                i += 2 + end_comment + 2;
+                continue;
+            }
+            break;
+        }
+
+        let ch = input[i..].chars().next().unwrap();
+        if ch == '"' || ch == '\'' {
+            if let Some(next) = find_matching_delimiter(input, i, ch, ch) {
+                i = next;
+                continue;
+            }
+            break;
+        }
+
+        if ch == '[' {
+            let prev = prev_non_whitespace_char(input, i);
+            if matches!(prev, Some(c) if c.is_ascii_alphanumeric() || c == ')' || c == ']' || c == '_') {
+                i += ch.len_utf8();
+                continue;
+            }
+
+            if let Some(end_bracket) = find_matching_delimiter(input, i, '[', ']') {
+                if !is_array_comprehension(input, i, end_bracket) {
+                    return Some(i);
+                }
+                i = end_bracket;
+                continue;
+            }
+        }
+
+        i += ch.len_utf8();
+    }
+    None
+}
+
+fn has_invalid_parenthesized_array_initializer(input: &str) -> Option<usize> {
+    let mut i = 0;
+    while i < input.len() {
+        if input[i..].starts_with("//") {
+            i += 2;
+            while i < input.len() && input[i..].chars().next().unwrap() != '\n' {
+                i += input[i..].chars().next().unwrap().len_utf8();
+            }
+            continue;
+        }
+
+        if input[i..].starts_with("/*") {
+            if let Some(end_comment) = input[i + 2..].find("*/") {
+                i += 2 + end_comment + 2;
+                continue;
+            } else {
+                break;
+            }
+        }
+
+        let ch = input[i..].chars().next().unwrap();
+        if ch == '"' || ch == '\'' {
+            if let Some(end_pos) = find_matching_delimiter(input, i, ch, ch) {
+                i = end_pos;
+                continue;
+            } else {
+                break;
+            }
+        }
+
+        if input[i..].starts_with("new") {
+            let after_new = i + 3;
+            if after_new < input.len() {
+                let next = input[after_new..].chars().next().unwrap();
+                if next.is_ascii_alphanumeric() || next == '_' {
+                    i += 3;
+                    continue;
+                }
+            }
+
+            i = skip_whitespace(input, after_new);
+            // Skip base type and optional type suffixes until we reach an array suffix or non-type chars.
+            while i < input.len() {
+                let ch2 = input[i..].chars().next().unwrap();
+                if ch2.is_whitespace()
+                    || matches!(ch2, ':' | ',' | '(' | ')' | '{' | '}' | '[' | ']')
+                {
+                    break;
+                }
+                i += ch2.len_utf8();
+            }
+
+            loop {
+                i = skip_whitespace(input, i);
+                if input[i..].starts_with("[]") {
+                    i += 2;
+                    continue;
+                }
+                if i < input.len() && input[i..].starts_with('[') {
+                    if let Some(end_bracket) = find_matching_delimiter(input, i, '[', ']') {
+                        i = skip_whitespace(input, end_bracket);
+                        if i < input.len() && input[i..].starts_with('(') {
+                            return Some(i);
+                        }
+                        continue;
+                    }
+                }
+                break;
+            }
+        }
+
+        i += ch.len_utf8();
+    }
+    None
+}
+
+pub fn validate_array_initializer_syntax(input: &str) -> Result<(), String> {
+    if let Some(pos) = has_invalid_parenthesized_array_initializer(input) {
+        return Err(format!(
+            "Sintaxis invalida: use '{{ ... }}' para inicializadores de arrays con lambda en lugar de '(...)' en la posicion {}",
+            pos
+        ));
+    }
+    if let Some(pos) = has_invalid_literal_bracket_array(input) {
+        return Err(format!(
+            "Sintaxis invalida: use '{{ ... }}' para literales de array en lugar de '[...]' en la posicion {}",
+            pos
+        ));
+    }
+    Ok(())
+}
+
+pub fn validate_before_lexer(input: &str) -> Result<String, (usize, String)> {
+    validate_array_initializer_syntax(input).map_err(|message| (0, message))?;
+    Ok(preprocess_new_array_initializers(input))
+}
+
+pub fn lex_safe(input: &str) -> Result<Vec<Token>, (usize, String)> {
+    let preprocessed = validate_before_lexer(input)?;
+    let tokens = tokenize_source(&preprocessed)?;
+    Ok(postprocess_tokens(tokens))
+}
+
+fn tokenize_source(input: &str) -> Result<Vec<Token>, (usize, String)> {
+    use crate::lexer::Token as LexerToken;
+    use logos::Logos;
+
+    let mut tokens = Vec::new();
+    let mut lexer = LexerToken::lexer(input);
+
+    while let Some(result) = lexer.next() {
+        match result {
+            Ok(tok) => tokens.push(tok),
+            Err(_) => {
+                return Err((
+                    lexer.span().start,
+                    format!("Token no reconocido: {:?}", lexer.slice()),
+                ));
+            }
+        }
+    }
+
+    Ok(tokens)
+}
+
+pub fn postprocess_tokens(tokens: Vec<Token>) -> Vec<Token> {
+    let tokens = remove_double_pipe_tokens(tokens);
+    let tokens = wrap_inline_if_after_binary_ops(tokens);
+    let tokens = fix_list_comprehension_pipe(tokens);
+    tokens
+}
+
 pub fn preprocess_new_array_initializers(input: &str) -> String {
     let chars: Vec<char> = input.chars().collect();
     let mut out = String::with_capacity(input.len());

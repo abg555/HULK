@@ -302,8 +302,8 @@ pub struct ArrayExpr {
 
 #[derive(Clone)]
 pub struct ArrayComprehensionExpr {
-    pub element: Box<Expr>, // ej:[x * 2 || x in numbers]
-    pub variable: String, // expresión generada (x * 2), variable iteradora (x), iterable (numbers)
+    pub element: Box<Expr>,
+    pub variable: String,
     pub iterable: Box<Expr>,
 }
 

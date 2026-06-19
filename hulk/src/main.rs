@@ -6,7 +6,7 @@ mod node_ids;
 mod preprocessor;
 mod semantic; // Asegúrate de que el módulo sea visible
 use semantic::functor_desugar;
-use preprocessor::{preprocess_new_array_initializers, remove_double_pipe_tokens, wrap_inline_if_after_binary_ops, add_lambda_tokens, fix_list_comprehension_pipe};
+use preprocessor::{lex_safe, postprocess_tokens, validate_before_lexer};
 use std::env;
 use std::fs;
 use std::io::{self, Read};
@@ -70,13 +70,29 @@ fn main() -> io::Result<()> {
     // =========================
     // 1. LEXER
     // =========================
-    let tokens = match lex_safe(&input) {
-        Ok(t) => t,
+    let preprocessed = match validate_before_lexer(&input) {
+        Ok(text) => text,
         Err((pos, msg)) => {
-            eprintln!("(1,{}) LEXICAL: {}", pos, msg);
+            eprintln!("(1,{}) ERROR: {}", pos, msg);
             process::exit(1);
         }
     };
+
+    use logos::Logos;
+    let mut tokens = Vec::new();
+    let mut lexer = lexer::Token::lexer(&preprocessed);
+
+    while let Some(result) = lexer.next() {
+        match result {
+            Ok(tok) => tokens.push(tok),
+            Err(_) => {
+                eprintln!("(1,{} ) LEXICAL: Token no reconocido: {:?}" , lexer.span().start, lexer.slice());
+                process::exit(1);
+            }
+        }
+    }
+
+    let tokens = postprocess_tokens(tokens);
 
     // =========================
     // 2. PARSER
@@ -228,36 +244,3 @@ fn main() -> io::Result<()> {
     Ok(())
 }
 
-// =========================
-// LEXER SAFE
-// =========================
-fn lex_safe(input: &str) -> Result<Vec<lexer::Token>, (usize, String)> {
-    use logos::Logos;
-
-    // Preprocess source: convert `{...}` patterns to appropriate brackets
-    let preprocessed = preprocess_new_array_initializers(input);
-
-    // Tokenize
-    let mut tokens = Vec::new();
-    let mut lexer = lexer::Token::lexer(&preprocessed);
-
-    while let Some(result) = lexer.next() {
-        match result {
-            Ok(tok) => tokens.push(tok),
-            Err(_) => {
-                return Err((
-                    lexer.span().start,
-                    format!("Token no reconocido: {:?}", lexer.slice()),
-                ));
-            }
-        }
-    }
-
-    // Post-lexing token transformations
-    let tokens = remove_double_pipe_tokens(tokens);
-    let tokens = wrap_inline_if_after_binary_ops(tokens);
-    let tokens = add_lambda_tokens(tokens);
-    let tokens = fix_list_comprehension_pipe(tokens);
-
-    Ok(tokens)
-}

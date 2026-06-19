@@ -20,6 +20,8 @@ pub use semantic::{functor_desugar, macro_expander, symbol_table, types};
 pub fn lex_safe(input: &str) -> Result<Vec<lexer::Token>, String> {
     use logos::Logos;
 
+    preprocessor::validate_array_initializer_syntax(input)?;
+
     // Preprocess source to accept array initializers written with braces after size,
     // e.g. `new Number[5]{ i -> i * 2 }` -> `new Number[5]( i -> i * 2 )` so
     // the parser rule that expects parentheses can consume the lambda initializer.
@@ -40,9 +42,7 @@ pub fn lex_safe(input: &str) -> Result<Vec<lexer::Token>, String> {
 
     let tokens = preprocessor::remove_double_pipe_tokens(tokens);
     let tokens = preprocessor::wrap_inline_if_after_binary_ops(tokens);
-    let tokens = preprocessor::add_lambda_tokens(tokens);
     let tokens = preprocessor::fix_list_comprehension_pipe(tokens);
-    let tokens = preprocessor::mark_macro_block_calls(tokens);
 
     Ok(tokens)
 }
