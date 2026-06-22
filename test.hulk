@@ -1,0 +1,408 @@
+// Pon aquí el código que quieras parsear
+// Ejemplos:
+
+//Ejemplo 1
+print("Hello World");
+
+//Ejemplo 2
+42;
+
+//Ejemplo 3
+print((((1 + 2) ^ 3) * 4) / 5);
+
+//Ejemplo 4
+print(1 + 2 ^ 3 * 4 / 5);
+
+//Ejemplo 5
+print("The message is \"Hello World\"");
+
+//ejemplo 6
+print("The meaning of life is " @ 42);
+
+//ejemplo 7
+{
+    print(42);
+    print(sin(PI/2));
+    print("Hello World");
+}
+
+//ejemplo 8
+function tan(x) => sin(x) / cos(x);
+
+//ejemplo 9
+function operate(x, y) {
+    print(x + y);
+    print(x - y);
+    print(x * y);
+    print(x / y);
+}
+
+//ejemplo 10
+let msg = "Hello World" in print(msg);
+
+//ejemplo 11
+let number = 42, text = "The meaning of life is" in
+    print(text @ number);
+
+//ejemplo 12
+let number = 42 in
+    let text = "The meaning of life is" in
+        print(text @ number);
+
+//ejemplo 13
+let a = 5, b = 10, c = 20 in {
+    print(a+b);
+    print(b*c);
+    print(c/a);
+}
+
+//ejemplo 14
+let a = (let b = 6 in b * 7) in print(a);
+
+//ejemplo 15
+let a = 0 in {
+    print(a);
+    a := 1;
+    print(a);
+}
+
+//ejemplo 16
+let a = 0 in
+    let b = a := 1 in {
+        print(a);
+        print(b);
+    };
+
+//ejemplo 17
+let a = 42 in if (a % 2 == 0) print("Even") else print("odd");
+
+//ejemplo 18
+let a = 42 in print(if (a % 2 == 0) "even" else "odd");
+
+//ejemplo 19
+let a = 42 in
+    if (a % 2 == 0) {
+        print(a);
+        print("Even");
+    }
+    else print("Odd");
+
+//ejemplo 20
+let a = 42, mod = a % 3 in
+    print(
+        if (mod == 0) "Magic"
+        elif (mod % 3 == 1) "Woke"
+        else "Dumb"
+    );
+
+//ejemplo 21 
+let a = 10 in while (a >= 0) {
+    print(a);
+    a := a - 1;
+}
+
+//ejemplo 22
+function gcd(a, b) => while (a > 0)
+    let m = a % b in {
+        b := a;
+        a := m;
+    };
+
+//ejemplo 23
+for (x in range(0, 10)) print(x);
+
+//ejemplo 24
+let iterable = range(0, 10) in
+    while (iterable.next())
+        let x = iterable.current() in
+            print(x);
+
+//ejemplo 25
+type Point {
+    x = 0;
+    y = 0;
+
+    getX() => self.x;
+    getY() => self.y;
+
+    setX(x) => self.x := x;
+    setY(y) => self.y := y;
+}
+
+//ejemplo 26
+let pt = new Point() in
+    print("x: " @ pt.getX() @ "; y: " @ pt.getY());
+
+//ejemplo 27
+let pt = new Point(3,4) in
+    print("x: " @ pt.getX() @ "; y: " @ pt.getY());
+
+//ejemplo 28
+type PolarPoint inherits Point {
+    rho() => sqrt(self.getX() ^ 2 + self.getY() ^ 2);
+}
+
+//ejemplo 29
+type PolarPoint(phi, rho) inherits Point(rho * sin(phi), rho * cos(phi)) {
+}
+
+//ejemplo 30
+type Person(firstname, lastname) {
+    firstname = firstname;
+    lastname = lastname;
+
+    name() => self.firstname @@ self.lastname;
+}
+
+//ejemplo 31
+type Knight inherits Person {
+    name() => "Sir" @@ base();
+}
+
+let p = new Knight("Phil", "Collins") in
+    print(p.name()); 
+
+//ejemplo 32
+let x: Number = 42 in print(x);
+
+//ejemplo 33
+function tan(x: Number): Number => sin(x) / cos(x);
+
+//ejemplo 34
+type Point(x: Number, y: Number) {
+    x: Number = x;
+    y: Number = y;
+
+}
+
+//ejemplo 35
+let x = new Superman() in
+    print(
+        if (x is Bird) "It's bird!"
+        elif (x is Plane) "It's a plane!"
+        else "No, it's Superman!"
+    );
+
+//ejemplo 36
+let x : A = if (rand() < 0.5) new B() else new C() in
+    if (x is B)
+        let y : B = x as B in {
+            print(x);
+        }
+    else {
+        print(y);
+    }
+
+//ejemplo 37
+function fib(n) => if (n == 0 | n == 1) 1 else fib(n-1) + fib(n-2);
+
+//ejemplo 38
+type A {
+    f() => "Hello";
+    g() => "World";
+}
+
+//ejemplo 39
+protocol P1 {
+    f(): String;
+    g(): String;
+}
+
+//ejemplo 40
+let x = new T() in print(g(f(x)));
+
+//ejemplo 41
+protocol Hashable {
+    hash(): Number;
+}
+
+//ejemplo 42
+protocol Equatable extends Hashable {
+    equals(other: Object): Boolean;
+}
+
+//ejemplo 43
+type Range(min:Number, max:Number) {
+    min = min;
+    max = max;
+    current = min - 1;
+
+    next(): Boolean => (self.current := self.current + 1) < max;
+    current(): Number => self.current;
+}
+
+//ejemplo 44
+function sum(numbers: Number*): Number =>
+    let total = 0 in
+        for (x in numbers)
+            total := total + x;
+
+//ejemplo 45
+let numbers = [1,2,3,4,5] in
+    print(mean(numbers));
+
+//ejemplo 46
+let numbers = [1,2,3,4,5,6,7,8,9] in
+    for (x in numbers)
+        print(x);
+
+//ejemplo 47
+let numbers = [1,2,3,4,5,6,7,8,9] in print(numbers[7]);
+
+//ejemplo 48
+let squares = [ x^2 | x in range(1,10)] in print(x);
+
+//ejemplo 49
+function mean(numbers: Number[]): Number =>
+    let total = 0 in {
+        for (x in numbers)
+            total := total + x;
+
+        total / numbers.size();
+    };
+
+//ejemplo 50
+protocol NumberFilter {
+    invoke(x: Number): Boolean;
+}
+
+//ejemplo 51
+function count_when(numbers: Number*, filter: NumberFilter) {
+    let total = 0 in
+        for (x in numbers)
+            total := total + if (filter.invoke(x)) 1 else 0;
+}
+
+//ejemplo 52
+type IsOdd {
+    invoke(x: Number): Boolean => x % 2 == 0;
+}
+
+//ejemplo 53
+let numbers = range(0, 100) in
+    print(count_when(numbers, IsOdd())); 
+
+//ejemplo 54
+let numbers = range(0, 100), filter: NumberFilter = is_odd in
+    print(count_when(numbers, filter));
+
+//ejemplo 55
+let numbers = range(0, 100) in
+    print(count_when(numbers, (x: Number): Boolean => x % 2 == 0));
+
+//ejemplo 56
+let numbers = range(0, 100) in
+    print(count_when(numbers, (x) => x % 2 == 0));
+
+//ejemplo 57
+let numbers = range(0, 100), filter: NumberFilter = (x) => x % 2 == 0 in
+    print(count_when(numbers, filter));
+
+//ejemplo 58
+let numbers = range(0, 100), filter = (x) => x % 2 == 0 in
+    print(count_when(numbers, filter));
+
+//ejemplo 59
+function count_when(numbers: Number*, filter: (Number, Boolean) -> Boolean) {
+    print("hola");
+}
+
+//ejemplo 60
+repeat(10, () => {print(x);});
+
+//ejemplo 61
+def repeat(n: Number, *expr: Object): Object =>
+    let total = n in
+        while (total >= 0) {
+            total := total - 1;
+            expr;
+        };
+
+//ejemplo 62
+repeat(10) {
+    print("Hello World");
+}
+
+//ejemplo 63
+let total = 10 in repeat(total) {
+    print(total);
+};
+
+//ejemplo 64
+def swap(@a: Object, @b: Object) {
+    let temp: Object = a in {
+        a := b;
+        b := temp;
+    }
+}
+
+//ejemplo 65
+let x: Object = 5, y: Object = "Hello World" in {
+    swap(@x, @y);
+    print(x);
+    print(y);
+};
+
+//ejemplo 66
+def repeat($iter: Number, n: Number, *expr:Object) {
+    let iter: Number = 0, total:Number = n in {
+        while (total >= 0) {
+            total := total - 1;
+            expr;
+            iter := iter + 1
+        };
+    }
+}
+
+//ejemplo 67
+repeat(current, 10) {
+    print(current);
+};
+
+//ejemplo 68
+def simplify(expr:Number) {
+    match(expr) {
+        case (x1:Number + x2:Number) => simplify(x1) + simplify(x2);
+        case (x1:Number + 0) => simplify(x1);
+        case (x1:Number - x2:Number) => simplify(x1) + simplify(x2);
+        case (x1:Number - 0) => simplify(x1);
+        case (x1:Number * x2:Number) => simplify(x1) * simplify(x2);
+        case (x1:Number * 1) => simplify(x1);
+        default => expr;
+    };
+}
+
+//ejemplo 69
+print(simplify((42+0)*1));
+
+//ejemplo 70
+new Animal();
+
+//ejemplo 71
+let a = new Animal() in a.me();
+
+//ejemplo 72
+let lambda = 20 in print(lambda);
+
+//ejemplo 73
+print(1 * (if (true) 2 else 3 + 100) + 2);
+
+
+
+//ejemplo 74
+let matrix: Number[][] = new Number[][3] in {
+    let i = 0 in
+        while (i < 3) {
+            matrix[i] := new Number[3];
+            let j = 0 in
+                while (j < 3) {
+                    matrix[i][j] := i * 3 + j;
+                    j := j + 1;
+                };
+            i := i + 1;
+        };
+    if (matrix[0][0] == 0) print("ok") else print("fail");
+    if (matrix[1][2] == 5) print("ok") else print("fail");
+    if (matrix[2][1] == 7) print("ok") else print("fail");
+    if (matrix[2][2] == 8) print("ok") else print("fail");
+};
