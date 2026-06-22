@@ -1,7 +1,0 @@
-// Example: array comprehension
-let src = [1,2,3] in
-let dest = [x * 2 | x in src] in
-print(dest);
-
-// sum the comprehension result by indexing
-let sum = dest[0] + dest[1] + dest[2] in print(sum);

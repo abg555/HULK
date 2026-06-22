@@ -1,8 +1,0 @@
-
-// range count
-let count = 0 in {
-    for (i in range(0, 10)) {
-        count := count + 1;
-    };
-    if (count == 10) print("ok") else print("fail");
-};

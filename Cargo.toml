@@ -1,0 +1,12 @@
+[package]
+name = "hulk"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+logos = "0.16.0"
+lalrpop-util = "0.20"
+inkwell = { version = "0.4.0", features = ["llvm16-0"] }
+
+[build-dependencies]
+lalrpop = "0.20"

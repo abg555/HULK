@@ -1,2 +1,0 @@
-let x = "unterminated
-in print(x);

@@ -1,5 +1,0 @@
-function f(x Number): Number {
-    x;
-}
-
-print(f(5));

@@ -1,2 +1,0 @@
-function foo(x: FooType): Number { 0; }
-print(foo(5));
