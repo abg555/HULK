@@ -479,7 +479,19 @@ CallExpr: Expr = {
             }
         }
     },
-    <callee:CallExpr> "(" <args:ArgList> ")" => {mk_expr(KindExpr::Call(CallExpr { callee: Box::new(callee), arguments: args }))},
+    <callee:CallExpr> "(" <args:ArgList> ")" => {
+        let is_base = if let KindExpr::Variable(var) = &callee.kind {
+            var.name == "base"
+        } else {
+            false
+        };
+
+        if is_base {
+            mk_expr(KindExpr::BaseCall(BaseCallExpr { arguments: args }))
+        } else {
+            mk_expr(KindExpr::Call(CallExpr { callee: Box::new(callee), arguments: args }))
+        }
+    },
     <obj:CallExpr> "." <field:"id"> => {mk_expr(KindExpr::MemberAccess(MemberAccessExpr { object: Box::new(obj), field }))},
     <obj:CallExpr> "[" <index:Expr> "]" => {mk_expr(KindExpr::Index(IndexExpr { object: Box::new(obj), index: Box::new(index) }))},
     PrimaryExpr,
